@@ -1,0 +1,23 @@
+# Example config for the keyword-search document agent.
+# Copy to search-agent.toml for local use.
+# Keep real API keys out of committed files.
+
+data_dir = "D:/查询机器人资料/本地数据"
+model = "deepseek-v4-flash"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+[search]
+max_rounds = 3
+top_k = 8
+
+[web_fetch]
+enabled = true
+provider = "jina"
+fallback_provider = "crawl4ai"
+max_pages = 3
+max_chars_per_page = 20000
+timeout_seconds = 30
+
+[secrets]
+dashscope_api_key = ""
+serpapi_api_key = ""

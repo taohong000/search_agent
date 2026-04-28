@@ -1,0 +1,8 @@
+.env
+search-agent.toml
+*.local.toml
+__pycache__/
+*.pyc
+本地数据/
+.pytest_cache/
+.mypy_cache/
