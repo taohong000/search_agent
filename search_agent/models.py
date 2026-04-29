@@ -43,6 +43,15 @@ class SearchRound:
 
 
 @dataclass(frozen=True)
+class EvidenceDecision:
+    is_sufficient: bool
+    needs_web: bool
+    next_terms: list[str] = field(default_factory=list)
+    missing_facts: list[str] = field(default_factory=list)
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class AgentAnswer:
     answer: str
     local_sources: list[LocalSearchResult] = field(default_factory=list)
@@ -50,3 +59,5 @@ class AgentAnswer:
     web_pages: list[WebPageContent] = field(default_factory=list)
     search_rounds: list[SearchRound] = field(default_factory=list)
     used_web: bool = False
+    answerable: bool = True
+    unable_reason: str = ""
