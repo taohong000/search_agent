@@ -7,6 +7,7 @@ from .config import Settings
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI \u5165\u53e3\uff1a\u89e3\u6790\u547d\u4ee4\u884c\u53c2\u6570\uff0c\u521b\u5efa SearchAgent\uff0c\u6267\u884c\u95ee\u7b54\u5e76\u8f93\u51fa\u7ed3\u679c\u3002"""
     parser = argparse.ArgumentParser(prog="search-agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -20,6 +21,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "ask":
+        # \u6839\u636e\u547d\u4ee4\u884c\u53c2\u6570\u786e\u5b9a\u7f51\u7edc\u641c\u7d22\u7b56\u7565\uff1aauto / always / never
         policy = "auto"
         if args.web:
             policy = "always"

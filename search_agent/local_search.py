@@ -8,13 +8,18 @@ from .models import LocalSearchResult
 
 HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 GENERIC_TERMS = {"上海", "社保", "社会保险", "参保", "缴费", "养老保险", "医疗保险"}
+FRONT_MATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+YEAR_RE = re.compile(r"20\d{2}")
 
 
 class LocalSearchEngine:
+    """本地搜索引擎：遍历 Markdown 文件，按关键词匹配打分，返回 Top-K 结果。"""
+
     def __init__(self, root: str | Path):
         self.root = Path(root)
 
     def search(self, terms: list[str], top_k: int = 8) -> list[LocalSearchResult]:
+        """搜索本地 Markdown 文件：遍历所有 .md 文件，对每个文件评分并返回得分最高的 top_k 个。"""
         normalized_terms = unique_terms(terms)
         if not normalized_terms or not self.root.exists():
             return []
@@ -53,13 +58,19 @@ def read_utf8(path: Path) -> str | None:
 
 
 def score_document(root: Path, path: Path, text: str, terms: list[str]) -> LocalSearchResult | None:
+    """对单个文档评分：综合路径、标题、元数据、正文中的关键词命中次数和权重。"""
+    metadata, body = split_front_matter(text)
+    if metadata.get("agent_eligible", "").lower() == "false":
+        return None
     rel_path = str(path.relative_to(root))
-    title = extract_title(text) or path.stem
-    headings = "\n".join(HEADING_RE.findall(text))
+    title = metadata.get("title") or extract_title(body) or path.stem
+    headings = "\n".join(HEADING_RE.findall(body))
+    metadata_text = metadata_search_text(metadata)
     path_lower = rel_path.lower()
     title_lower = title.lower()
     headings_lower = headings.lower()
-    text_lower = text.lower()
+    metadata_lower = metadata_text.lower()
+    text_lower = body.lower()
 
     matched: list[str] = []
     score = 0.0
@@ -74,6 +85,8 @@ def score_document(root: Path, path: Path, text: str, terms: list[str]) -> Local
             term_score += 8 * weight
         if needle in title_lower:
             term_score += 10 * weight
+        if needle in metadata_lower:
+            term_score += 7 * weight
         if needle in headings_lower:
             term_score += 6 * weight
         if body_count:
@@ -89,11 +102,14 @@ def score_document(root: Path, path: Path, text: str, terms: list[str]) -> Local
     if not matched:
         return None
 
-    snippet = extract_multi_snippet(text, matched, best_term)
+    score += metadata_score_adjustment(metadata)
+    score += requested_year_adjustment(terms, rel_path, title, metadata_text)
+    snippet = extract_multi_snippet(body, matched, best_term)
     return LocalSearchResult(path=path, title=title, snippet=snippet, matched_terms=matched, score=score)
 
 
 def term_weight(term: str) -> float:
+    """关键词权重：通用词（如"上海"、"社保"）权重低，长词（>=4字）权重高。"""
     if term in GENERIC_TERMS:
         return 0.35
     if len(term) >= 4:
@@ -104,6 +120,75 @@ def term_weight(term: str) -> float:
 def extract_title(text: str) -> str | None:
     match = HEADING_RE.search(text)
     return match.group(1).strip() if match else None
+
+
+def split_front_matter(text: str) -> tuple[dict[str, str], str]:
+    match = FRONT_MATTER_RE.match(text)
+    if not match:
+        return {}, text
+    return parse_front_matter(match.group(1)), text[match.end() :]
+
+
+def parse_front_matter(block: str) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    for line in block.splitlines():
+        if ":" not in line:
+            continue
+        key, raw_value = line.split(":", 1)
+        key = key.strip()
+        value = raw_value.strip().strip('"').strip("'")
+        if key:
+            metadata[key] = value
+    return metadata
+
+
+def metadata_search_text(metadata: dict[str, str]) -> str:
+    keys = [
+        "title",
+        "primary_business_line",
+        "business_lines",
+        "service_items",
+        "doc_kind",
+        "doc_status",
+        "effective_date",
+        "version_no",
+        "version_index_path",
+    ]
+    return " ".join(metadata.get(key, "") for key in keys)
+
+
+def metadata_score_adjustment(metadata: dict[str, str]) -> float:
+    """根据文档元数据调整分数：active 状态加分，过期/废止扣分，FAQ 加分。"""
+    score = 0.0
+    if metadata.get("doc_status") == "active":
+        score += 12
+    elif metadata.get("doc_status") in {"superseded", "expired", "inactive"}:
+        score -= 20
+    if metadata.get("doc_kind") == "faq":
+        score += 4
+    version_no = metadata.get("version_no")
+    if metadata.get("doc_status") == "active" and version_no and version_no.isdigit():
+        score += min(int(version_no), 10) * 3
+    return score
+
+
+def requested_year_adjustment(
+    """年份匹配调整：如果搜索词包含年份且文档匹配则大幅加分，不匹配则扣分。"""
+    terms: list[str],
+    rel_path: str,
+    title: str,
+    metadata_text: str,
+) -> float:
+    requested_years = set()
+    for term in terms:
+        requested_years.update(YEAR_RE.findall(term))
+    if not requested_years:
+        return 0.0
+
+    haystack = f"{rel_path}\n{title}\n{metadata_text}"
+    if any(year in haystack for year in requested_years):
+        return 80.0
+    return -35.0
 
 
 def extract_snippet(text: str, term: str, radius: int = 90) -> str:
@@ -119,6 +204,7 @@ def extract_snippet(text: str, term: str, radius: int = 90) -> str:
 
 
 def extract_multi_snippet(text: str, matched_terms: list[str], best_term: str | None, radius: int = 90) -> str:
+    """提取多段摘要：围绕最佳匹配词和关键事实词，最多取 3 段不重叠的上下文片段。"""
     priority_terms = []
     fact_terms = ["最高不超过", "最低不低于", "缴存比例", "月缴存额上限", "月缴存额下限"]
     for term in [best_term, *matched_terms, *fact_terms]:

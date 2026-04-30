@@ -1,91 +1,91 @@
-# Agent Loop Strategy
+# Agent 循环策略
 
-## Goal
+## 目标
 
-The agent should answer policy and document questions by repeatedly checking whether the available evidence is enough, not by stopping after a fixed number of keyword hits. The loop should make explicit decisions about local search, web verification, and answer readiness.
+Agent 应通过反复检查已有证据是否充分来回答政策和文档类问题，而不是在固定数量的关键词命中后就停止。循环应明确决定何时进行本地搜索、网络验证以及何时可以给出答案。
 
-## Proposed Loop
+## 提议的循环流程
 
-1. Understand the question and produce an initial plan.
-   - Identify the user intent.
-   - Extract likely search terms.
-   - Detect whether the answer depends on current policy, dates, money, ratios, thresholds, or official sources.
+1. **理解问题并生成初始计划**
+   - 识别用户意图
+   - 提取可能的搜索关键词
+   - 判断答案是否依赖于当前政策、日期、金额、比例、阈值或官方来源
 
-2. Run local search.
-   - Search local Markdown files with the current terms.
-   - Merge and rank evidence by source path and score.
+2. **执行本地搜索**
+   - 使用当前关键词搜索本地 Markdown 文件
+   - 按来源路径和评分合并并排序证据
 
-3. Evaluate evidence after each round.
-   - Decide whether the local evidence answers the question.
-   - Identify missing facts such as year, amount, ratio, process, eligibility, or official source.
-   - Decide whether web verification is required.
-   - Generate next search terms only when the evidence has a clear gap.
+3. **每轮搜索后评估证据**
+   - 判断本地证据是否足以回答问题
+   - 识别缺失的事实，如年份、金额、比例、流程、资格条件或官方来源
+   - 判断是否需要网络验证
+   - 仅当证据存在明显缺口时才生成下一轮搜索关键词
 
-4. Continue or stop.
-   - Stop when evidence is sufficient.
-   - Continue local search when the missing facts can plausibly be found locally.
-   - Use web search when the question is time-sensitive, official-current, or local evidence is weak.
-   - Stop when the round limit is reached, but record that evidence may be incomplete.
+4. **继续或停止**
+   - 证据充分时停止
+   - 缺失事实可能在本地找到时继续本地搜索
+   - 问题涉及时效性、官方最新政策或本地证据薄弱时使用网络搜索
+   - 达到轮次上限时停止，但需记录证据可能不完整
 
-5. Verify web evidence when needed.
-   - Prefer official sources.
-   - Fetch page body when configured.
-   - Cross-check dates, ratios, amounts, and policy year against local evidence.
+5. **需要时验证网络证据**
+   - 优先选择官方来源
+   - 配置允许时抓取页面正文
+   - 将日期、比例、金额和政策年份与本地证据交叉验证
 
-6. Write the answer.
-   - Answer directly in Chinese.
-   - Separate local and web evidence when relevant.
-   - State uncertainty when evidence is incomplete or stale.
-   - Include sources.
+6. **撰写答案**
+   - 直接用中文作答
+   - 相关时区分本地证据和网络证据
+   - 证据不完整或过时时说明不确定性
+   - 附上来源
 
-## Relationship To Common Agent Patterns
+## 与常见 Agent 模式的关系
 
-### Plan-and-Solve
+### Plan-and-Solve（计划-求解）
 
-This is the strongest match. The agent first creates a search plan, then solves the problem by executing the plan through local search, web verification, and answer synthesis.
+这是最匹配的模式。Agent 首先创建搜索计划，然后通过本地搜索、网络验证和答案综合来执行计划解决问题。
 
-The current project already has a lightweight version of this in `QueryPlanner.initial_plan()`. The missing part is that the plan is not revised by evidence quality.
+当前项目在 `QueryPlanner.initial_plan()` 中已有轻量版本。缺失的部分是计划未根据证据质量进行修正。
 
-### ReAct
+### ReAct（推理-行动）
 
-This design uses a constrained form of ReAct:
+本设计使用了受限形式的 ReAct：
 
-- Reason: evaluate whether the evidence is enough and what is missing.
-- Act: run local search, run web search, fetch pages, or answer.
-- Observe: inspect local hits and web pages before deciding the next action.
+- **推理（Reason）**：评估证据是否充分以及缺少什么
+- **行动（Act）**：执行本地搜索、网络搜索、抓取页面或给出答案
+- **观察（Observe）**：在决定下一步行动前检查本地命中结果和网页内容
 
-It is not a full open-ended ReAct agent because tools are fixed and bounded. That is intentional: the project is a policy/document query CLI, so deterministic tool boundaries are safer than arbitrary tool use.
+这不是完全开放式的 ReAct Agent，因为工具是固定且有界的。这是有意为之的：本项目是政策/文档查询 CLI，确定性的工具边界比任意工具使用更安全。
 
-### Reflection
+### Reflection（反思）
 
-The evidence evaluation step is a lightweight reflection pass. It checks:
+证据评估步骤是一个轻量级的反思过程。它检查：
 
-- Does the evidence answer the question?
-- Is the evidence current enough?
-- Are there conflicts between sources?
-- Is web verification required?
-- What exact facts are missing?
+- 证据是否回答了问题？
+- 证据是否足够新？
+- 不同来源之间是否存在冲突？
+- 是否需要网络验证？
+- 具体缺少哪些事实？
 
-The design does not add a second LLM critique after answer generation yet. That can be added later if answer quality remains weak.
+目前设计中尚未在答案生成后加入第二轮 LLM 批判。如果答案质量持续较弱，可以后续添加。
 
-## Implementation Shape
+## 实现结构
 
-Add an `EvidenceEvaluator` boundary with one method:
+添加一个 `EvidenceEvaluator` 边界，包含一个方法：
 
 ```python
 evaluate(question, terms, local_sources, rounds, plan) -> EvidenceDecision
 ```
 
-The decision should include:
+决策应包含：
 
-- `is_sufficient`: whether the agent can stop local search.
-- `needs_web`: whether web verification is required.
-- `next_terms`: terms for the next local search round.
-- `missing_facts`: short labels for unresolved information.
-- `reason`: a short explanation useful for debugging.
+- `is_sufficient`：Agent 是否可以停止本地搜索
+- `needs_web`：是否需要网络验证
+- `next_terms`：下一轮本地搜索的关键词
+- `missing_facts`：未解决信息的简短标签
+- `reason`：便于调试的简短说明
 
-The default evaluator should be deterministic so tests and offline use remain stable. A later LLM-backed evaluator can use the same interface and return the same structured decision.
+默认评估器应是确定性的，以确保测试和离线使用保持稳定。后续基于 LLM 的评估器可以使用相同接口并返回相同的结构化决策。
 
-## Expected Improvement
+## 预期改进
 
-The old loop stopped when it found three local documents. The new loop stops when an evaluator says the evidence is enough. For questions like "上海公积金是如何缴存的", the evaluator should notice that official yearly details such as basis, ratio, and amount limits are important, and should require web verification when current policy is involved.
+旧循环在找到三个本地文档后停止。新循环在评估器判定证据充分时停止。对于"上海公积金是如何缴存的"这类问题，评估器应能识别出基数、比例、金额上限等官方年度细节的重要性，并在涉及当前政策时要求进行网络验证。

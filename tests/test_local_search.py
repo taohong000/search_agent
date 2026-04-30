@@ -88,6 +88,98 @@ class LocalSearchEngineTests(unittest.TestCase):
         self.assertIn("5%~7%", results[0].snippet)
         self.assertIn("月缴存额", results[0].snippet)
 
+    def test_front_matter_indexes_boost_relevant_active_agent_documents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "官网" / "上海住房公积金网" / "政策解读" / "租赁提取问答.md"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                "---\n"
+                "title: \"关于优化本市住房公积金租赁提取业务问答\"\n"
+                "doc_status: \"active\"\n"
+                "service_items: [\"公积金提取\", \"租赁提取\"]\n"
+                "agent_eligible: true\n"
+                "---\n\n"
+                "# 关于优化本市住房公积金租赁提取业务问答\n\n"
+                "市场租赁住房每户家庭月提取限额为4000元。\n",
+                encoding="utf-8",
+            )
+
+            noisy = root / "官网" / "上海住房公积金网" / "政策解读" / "基数调整温馨提示.md"
+            noisy.write_text(
+                "---\n"
+                "title: \"2025年度住房公积金缴存基数调整温馨提示\"\n"
+                "doc_status: \"active\"\n"
+                "service_items: [\"缴存基数调整\"]\n"
+                "agent_eligible: true\n"
+                "---\n\n"
+                "# 2025年度住房公积金缴存基数调整温馨提示\n\n"
+                "公积金 住房公积金 上海 缴存 基数调整 公积金 住房公积金 上海 缴存。\n",
+                encoding="utf-8",
+            )
+
+            ineligible = root / "官网" / "上海住房公积金网" / "政策解读" / "旧租赁提取问答.md"
+            ineligible.write_text(
+                "---\n"
+                "title: \"旧租赁提取问答\"\n"
+                "doc_status: \"superseded\"\n"
+                "service_items: [\"租赁提取\"]\n"
+                "agent_eligible: false\n"
+                "---\n\n"
+                "# 旧租赁提取问答\n\n"
+                "租赁提取月提取限额为3000元。\n",
+                encoding="utf-8",
+            )
+
+            results = LocalSearchEngine(root).search(
+                ["上海", "公积金", "住房公积金", "租赁提取", "月提取限额"],
+                top_k=5,
+            )
+
+        self.assertEqual(results[0].title, "关于优化本市住房公积金租赁提取业务问答")
+        self.assertTrue(all(source.title != "旧租赁提取问答" for source in results))
+
+    def test_requested_year_active_version_beats_older_repeated_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current = root / "官网" / "上海住房公积金网" / "政策文件" / "2025通知.md"
+            current.parent.mkdir(parents=True)
+            current.write_text(
+                "---\n"
+                "title: \"关于2025年度上海市调整住房公积金缴存基数、比例以及月缴存额上下限的通知\"\n"
+                "version_group_id: 118\n"
+                "version_no: 4\n"
+                "doc_status: \"active\"\n"
+                "service_items: [\"缴存基数调整\", \"缴存比例调整\", \"月缴存额\"]\n"
+                "doc_kind: \"policy_notice\"\n"
+                "agent_eligible: true\n"
+                "---\n\n"
+                "# 关于2025年度上海市调整住房公积金缴存基数、比例以及月缴存额上下限的通知\n\n"
+                "单位和职工比例为各5%~7%。\n",
+                encoding="utf-8",
+            )
+            old = root / "公众号" / "上海公积金公众号" / "2018比例问答.md"
+            old.parent.mkdir(parents=True)
+            old.write_text(
+                "---\n"
+                "title: \"《关于调整2018年度上海市住房公积金缴存比例的补充通知》的问答\"\n"
+                "doc_status: \"active\"\n"
+                "service_items: [\"缴存比例调整\"]\n"
+                "agent_eligible: true\n"
+                "---\n\n"
+                "# 《关于调整2018年度上海市住房公积金缴存比例的补充通知》的问答\n\n"
+                "住房公积金缴存比例 5% 7%。住房公积金缴存比例 5% 7%。"
+                "住房公积金缴存比例 5% 7%。\n",
+                encoding="utf-8",
+            )
+
+            results = LocalSearchEngine(root).search(
+                ["2025年度", "上海", "住房公积金", "缴存比例", "5%~7%", "5%", "7%"],
+                top_k=2,
+            )
+
+        self.assertEqual(results[0].title, "关于2025年度上海市调整住房公积金缴存基数、比例以及月缴存额上下限的通知")
+
 
 if __name__ == "__main__":
     unittest.main()
