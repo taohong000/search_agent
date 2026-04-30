@@ -44,6 +44,59 @@ max_pages = 3
 
 PDF 链接目前只会标记为 `pdf_unsupported`，后续需要单独接 PDF 下载和文本解析。
 
+## 本地数据同步脚本
+
+脚本默认从 `D:\code\sicrawl\.env.qa` 读取数据库环境变量，数据库正文来自 `policy_document_content.markdown_content`。默认写入 `D:\查询机器人资料\本地数据`，不传 `SourceId` 时不限制渠道。
+
+完整同步流程：
+
+```powershell
+.\scripts\sync_all.ps1
+```
+
+它会按顺序执行：
+
+```powershell
+.\scripts\sync_reviewed_markdown.ps1
+.\scripts\add_local_indexes.ps1
+.\scripts\build_version_indexes.ps1
+```
+
+指定输出目录测试：
+
+```powershell
+.\scripts\sync_all.ps1 -DataDir "D:\查询机器人资料\temp_test"
+```
+
+指定数据源，例如只同步 `source_id = 3`：
+
+```powershell
+.\scripts\sync_all.ps1 -DataDir "D:\查询机器人资料\temp_test" -SourceId 3
+```
+
+需要排查某一步时，也可以单独运行三个子脚本。
+
+`sync_reviewed_markdown.ps1` 只拉取 `auto_approved`、`manual_approved`、`filter_disabled` 状态的数据。生成文件名优先使用文档标题，标题重复且正文不同时会追加 `_v版本号`。脚本会写入 front matter，包括 `policy_document_id`、`version_group_id`、`version_index_path`、`source_url`、`review_status`、`content_hash`、`version_no` 等字段。
+
+`add_local_indexes.ps1` 会在 Markdown front matter 中补充本地维护索引字段，包括 `primary_business_line`、`business_lines`、`service_items`、`doc_kind`、`agent_eligible`。已有字段不会被覆盖，便于后续人工维护。
+
+`build_version_indexes.ps1` 会基于 `policy_version_group`、`policy_document`、`policy_change_log` 生成版本索引。只有同一版本组下对应文件两个或两个以上时才创建索引。索引位置根据 `policy_version_group.output_path_parts_json` 定位到正文所在目录，并写入该目录下的 `_indexes/version/`：
+
+```text
+正文目录/
+  2025年度基数调整问答.md
+  2024年度基数调整问答.md
+  _indexes/
+    version/
+      基数调整问答.md
+```
+
+正文 front matter 中的 `version_index_path` 会指向这个同目录索引，例如：
+
+```yaml
+version_index_path: "_indexes/version/基数调整问答.md"
+```
+
 ## 测试
 
 ```powershell
