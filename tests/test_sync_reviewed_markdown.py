@@ -76,34 +76,40 @@ class SyncReviewedMarkdownTests(unittest.TestCase):
         self.assertEqual(DEFAULT_STATUSES, ("auto_approved", "manual_approved", "filter_disabled"))
 
     def test_map_markdown_target_path_uses_crawler_markdown_layout(self):
+        crawler_output_dir = Path("crawler-root/output").resolve()
+        data_dir = Path("local-data").resolve()
         target = map_markdown_target_path(
-            normalized_text_path=r"D:\code\sicrawl\output\markdown\官网\上海住房公积金网\政策解读\a.md",
-            crawler_output_dir=Path(r"D:\code\sicrawl\output"),
-            data_dir=Path(r"D:\查询机器人资料\本地数据"),
+            normalized_text_path=str(crawler_output_dir / "markdown" / "官网" / "上海住房公积金网" / "政策解读" / "a.md"),
+            crawler_output_dir=crawler_output_dir,
+            data_dir=data_dir,
             source_type="website",
             source_name="上海住房公积金网",
             title="2025年度基数调整问答",
         )
 
-        self.assertEqual(target, Path(r"D:\查询机器人资料\本地数据\官网\上海住房公积金网\政策解读\2025年度基数调整问答.md"))
+        self.assertEqual(target, data_dir / "官网" / "上海住房公积金网" / "政策解读" / "2025年度基数调整问答.md")
 
     def test_map_markdown_target_path_supports_relative_output_path(self):
+        crawler_output_dir = Path("crawler-root/output").resolve()
+        data_dir = Path("local-data").resolve()
         target = map_markdown_target_path(
-            normalized_text_path=r"output\markdown\公众号\上海社保公众号\a.md",
-            crawler_output_dir=Path(r"D:\code\sicrawl\output"),
-            data_dir=Path(r"D:\查询机器人资料\本地数据"),
+            normalized_text_path=str(Path("output") / "markdown" / "公众号" / "上海社保公众号" / "a.md"),
+            crawler_output_dir=crawler_output_dir,
+            data_dir=data_dir,
             source_type="wechat_mp",
             source_name="上海社保",
             title="灵活就业参保指南",
         )
 
-        self.assertEqual(target, Path(r"D:\查询机器人资料\本地数据\公众号\上海社保公众号\灵活就业参保指南.md"))
+        self.assertEqual(target, data_dir / "公众号" / "上海社保公众号" / "灵活就业参保指南.md")
 
     def test_map_markdown_target_path_appends_version_when_requested(self):
+        crawler_output_dir = Path("crawler-root/output").resolve()
+        data_dir = Path("local-data").resolve()
         target = map_markdown_target_path(
-            normalized_text_path=r"output\markdown\官网\上海住房公积金网\政策解读\source.md",
-            crawler_output_dir=Path(r"D:\code\sicrawl\output"),
-            data_dir=Path(r"D:\查询机器人资料\本地数据"),
+            normalized_text_path=str(Path("output") / "markdown" / "官网" / "上海住房公积金网" / "政策解读" / "source.md"),
+            crawler_output_dir=crawler_output_dir,
+            data_dir=data_dir,
             source_type="website",
             source_name="上海住房公积金网",
             title="2025年度基数调整问答",
@@ -111,19 +117,20 @@ class SyncReviewedMarkdownTests(unittest.TestCase):
             append_version=True,
         )
 
-        self.assertEqual(target, Path(r"D:\查询机器人资料\本地数据\官网\上海住房公积金网\政策解读\2025年度基数调整问答_v4.md"))
+        self.assertEqual(target, data_dir / "官网" / "上海住房公积金网" / "政策解读" / "2025年度基数调整问答_v4.md")
 
     def test_map_markdown_target_path_falls_back_to_source_and_title(self):
+        data_dir = Path("local-data").resolve()
         target = map_markdown_target_path(
             normalized_text_path="",
-            crawler_output_dir=Path(r"D:\code\sicrawl\output"),
-            data_dir=Path(r"D:\查询机器人资料\本地数据"),
+            crawler_output_dir=Path("crawler-root/output").resolve(),
+            data_dir=data_dir,
             source_type="wechat_mp",
             source_name="上海社保公众号",
             title='退休怎么办理？蓝娃给您讲清楚！',
         )
 
-        self.assertEqual(target, Path(r"D:\查询机器人资料\本地数据\wechat_mp\上海社保公众号\退休怎么办理？蓝娃给您讲清楚！.md"))
+        self.assertEqual(target, data_dir / "wechat_mp" / "上海社保公众号" / "退休怎么办理？蓝娃给您讲清楚！.md")
 
     def test_strip_front_matter_only_removes_leading_metadata_block(self):
         text = "---\ntitle: old\n---\n# 标题\n\n正文\n\n---\n\n正文分隔线"

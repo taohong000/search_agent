@@ -1,4 +1,5 @@
 .env
+.venv/
 search-agent.toml
 *.local.toml
 __pycache__/
