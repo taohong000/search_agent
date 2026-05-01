@@ -8,6 +8,19 @@ from .llm_client import BailianClient
 from .local_search import LocalSearchEngine
 from .models import AgentAnswer, EvidenceDecision, LocalSearchResult, SearchRound, WebSearchResult
 from .query_planner import QueryPlanner
+from .relevance import (
+    domains_for_question,
+    is_current_policy_question,
+    is_domain_mismatch,
+    latest_year,
+    requested_years,
+    service_terms_for_question,
+    source_is_active,
+    source_is_official,
+    source_is_superseded,
+    source_text,
+    source_years,
+)
 from .web_fetch import Crawl4AIProvider, JinaReaderProvider, WebFetchRouter
 from .web_search import SerpApiSearch
 
@@ -81,8 +94,8 @@ class SearchAgent:
             evaluator_needs_web = evaluator_needs_web or decision.needs_web
             if decision.is_sufficient:
                 break
-            # 评估器建议的下一轮关键词，或由 planner 补充
-            next_terms = decision.next_terms or self.planner.next_terms(question, terms, matched_terms)
+            # 下一轮本地检索词由评估器生成；为空表示不继续本地搜索。
+            next_terms = decision.next_terms
             if not next_terms or next_terms == terms:
                 break
             terms = next_terms
@@ -98,11 +111,15 @@ class SearchAgent:
             if self.web_fetcher is not None:
                 web_pages = self.web_fetcher.fetch_many(web_sources, plan.terms)
 
-        # 第四步：排序、过滤本地来源，调用 LLM 生成最终答案
-        llm_client = self.llm_client or BailianClient(None, "deepseek-v4-flash", "")
+        # 第四步：排序、过滤本地来源，证据不足时直接返回缺口说明
         all_local = filter_final_sources(question, rank_final_sources(question, all_local))
-        answer = llm_client.answer(question, all_local[:top_k], web_sources, web_pages)
         answerable = final_decision.is_sufficient if final_decision is not None else bool(all_local)
+        unable_reason = "" if answerable else build_unable_reason(final_decision)
+        if answerable:
+            llm_client = self.llm_client or BailianClient(None, "deepseek-v4-flash", "")
+            answer = llm_client.answer(question, all_local[:top_k], web_sources, web_pages)
+        else:
+            answer = build_unanswerable_answer(question, unable_reason, all_local[:top_k], web_sources)
         return AgentAnswer(
             answer=answer,
             local_sources=all_local[:top_k],
@@ -111,7 +128,7 @@ class SearchAgent:
             search_rounds=rounds,
             used_web=bool(web_sources) or use_web,
             answerable=answerable,
-            unable_reason="" if answerable else build_unable_reason(final_decision),
+            unable_reason=unable_reason,
         )
 
 
@@ -139,52 +156,49 @@ def merge_local_sources(
 
 
 def rank_final_sources(question: str, sources: list[LocalSearchResult]) -> list[LocalSearchResult]:
-    """对最终本地来源重新排序，针对公积金等特定领域做时效性和权威性加权。"""
+    """对最终本地来源重新排序，按领域、事项、时效性和权威性加权。"""
     return sorted(sources, key=lambda item: final_source_score(question, item), reverse=True)
 
 
 def final_source_score(question: str, source: LocalSearchResult) -> float:
-    """计算最终排序分数：基础分 + 时效性加分（2025年度） + 权威来源加分 - 过时文档扣分。"""
-    text = f"{source.title} {source.path} {source.snippet}"
+    """计算最终排序分数：基础分 + 领域/事项/年份/状态/权威来源信号。"""
     score = source.score
-    if "公积金" in question or "住房公积金" in question:
-        if "2025年度" in text or "2025年" in text:
-            score += 100
-        if "上海住房公积金网" in str(source.path) or "官网" in str(source.path):
-            score += 30
-        if "规范性文件" in str(source.path) or "通知" in source.title:
-            score += 20
-        if any(year in text for year in ["2018年度", "2019年度", "2020年度", "2021年度", "2022年度", "2023年度"]):
-            score -= 30
+    text = source_text(source)
+    if domains_for_question(question):
+        score += -80 if is_domain_mismatch(question, source) else 40
+    for term in service_terms_for_question(question):
+        if term in text:
+            score += 18
+    years = requested_years(question)
+    if years:
+        score += 80 if years & source_years(source) else -35
+    if source_is_active(source):
+        score += 30
+    if source_is_superseded(source):
+        score -= 30
+    if source_is_official(source):
+        score += 20
+    if "规范性文件" in str(source.path) or "通知" in source.title:
+        score += 10
     return score
 
 
 def filter_final_sources(question: str, sources: list[LocalSearchResult]) -> list[LocalSearchResult]:
-    """过滤本地来源：公积金缴存类问题优先保留 2025 年度完整政策文档。"""
-    if "公积金" not in question and "住房公积金" not in question:
-        return sources
-    if "如何缴存" not in question and not any(term in question for term in ["现在", "最新", "今年", "当前", "目前"]):
-        return sources
-    current_sources = [source for source in sources if is_current_fund_source(source)]
-    return current_sources or sources
-
-
-def is_current_fund_source(source: LocalSearchResult) -> bool:
-    text = f"{source.title} {source.path} {source.snippet}"
-    has_year = "2025年度" in text or "2025年" in text
-    has_core_fact = any(
-        marker in text
-        for marker in [
-            "缴存基数、比例以及月缴存额上下限",
-            "37302",
-            "2690",
-            "5%~7%",
-            "5%至7%",
-            "5222",
-            "376",
-        ]
-    )
-    return has_year and has_core_fact
+    """过滤最终来源：移除领域错配来源，当前政策问题优先保留目标年份或最新年份。"""
+    relevant = [source for source in sources if not is_domain_mismatch(question, source)]
+    if domains_for_question(question) and not relevant:
+        return []
+    filtered = relevant or sources
+    years = requested_years(question)
+    if years:
+        year_matches = [source for source in filtered if years & source_years(source)]
+        return year_matches or filtered
+    if is_current_policy_question(question):
+        year = latest_year(filtered)
+        if year is not None:
+            latest_sources = [source for source in filtered if year in source_years(source)]
+            return latest_sources or filtered
+    return filtered
 
 
 def build_unable_reason(decision: EvidenceDecision | None) -> str:
@@ -194,3 +208,28 @@ def build_unable_reason(decision: EvidenceDecision | None) -> str:
     if decision.missing_facts:
         return "缺少证据：" + "、".join(decision.missing_facts)
     return decision.reason or "没有找到足够证据。"
+
+
+def build_unanswerable_answer(
+    question: str,
+    unable_reason: str,
+    local_sources: list[LocalSearchResult],
+    web_sources: list[WebSearchResult],
+) -> str:
+    """证据不足时构造保守回答，避免大模型基于不充分证据继续发挥。"""
+    lines = [
+        f"问题：{question}",
+        "",
+        f"无法回答：{unable_reason}",
+    ]
+    if local_sources:
+        lines.append("")
+        lines.append("已检索到的本地来源：")
+        for source in local_sources[:5]:
+            lines.append(f"- {source.title}（{source.path}）")
+    if web_sources:
+        lines.append("")
+        lines.append("已检索到的网络来源：")
+        for source in web_sources[:5]:
+            lines.append(f"- {source.title}（{source.url}）")
+    return "\n".join(lines)

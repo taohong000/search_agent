@@ -17,6 +17,7 @@ class LocalSearchResult:
     snippet: str
     matched_terms: list[str]
     score: float
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

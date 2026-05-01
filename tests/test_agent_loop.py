@@ -78,7 +78,40 @@ class FakeEvidenceEvaluator:
 
 class OverconfidentLlmClient(FakeLlmClient):
     def evaluate_evidence(self, question, terms, local_sources, rounds, plan):
-        return EvidenceDecision(is_sufficient=True, needs_web=False, reason="LLM thinks enough.")
+        return EvidenceDecision(is_sufficient=True, needs_web=False, reason="大模型判断当前证据充分。")
+
+
+class PersonalAccountLlmClient(FakeLlmClient):
+    def evaluate_evidence(self, question, terms, local_sources, rounds, plan):
+        return EvidenceDecision(
+            is_sufficient=False,
+            needs_web=False,
+            missing_facts=["个人账户余额"],
+            reason="个人账户余额需要用户个人账户数据。",
+        )
+
+
+class FundPolicyLlmClient(FakeLlmClient):
+    def evaluate_evidence(self, question, terms, local_sources, rounds, plan):
+        if len(rounds) == 1:
+            return EvidenceDecision(
+                is_sufficient=False,
+                needs_web=False,
+                next_terms=[
+                    "2025年度",
+                    "上海市",
+                    "调整",
+                    "住房公积金",
+                    "缴存基数",
+                    "比例",
+                    "月缴存额",
+                    "上下限",
+                    "通知",
+                ],
+                missing_facts=["2025年度完整政策"],
+                reason="需要当前年度完整公积金政策文件。",
+            )
+        return EvidenceDecision(is_sufficient=True, needs_web=False, reason="已找到当前政策证据。")
 
 
 class SearchAgentTests(unittest.TestCase):
@@ -116,7 +149,7 @@ class SearchAgentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_policy_fixture(root)
-            agent = SearchAgent(data_dir=root, llm_client=FakeLlmClient(), max_rounds=3)
+            agent = SearchAgent(data_dir=root, llm_client=PersonalAccountLlmClient(), max_rounds=3)
 
             result = agent.ask("帮我查询一下我个人公积金账户现在余额是多少？", web_policy="never", top_k=5)
 
@@ -204,7 +237,7 @@ class SearchAgentTests(unittest.TestCase):
                         needs_web=False,
                         next_terms=["缴存比例"],
                         missing_facts=["缴存比例"],
-                        reason="Need ratio details.",
+                        reason="需要补充缴存比例细节。",
                     ),
                     EvidenceDecision(is_sufficient=True, needs_web=False),
                 ]
@@ -222,6 +255,65 @@ class SearchAgentTests(unittest.TestCase):
         self.assertEqual(result.search_rounds[1].query_terms, ["缴存比例"])
         self.assertGreaterEqual(len(evaluator.calls), 2)
 
+    def test_agent_loop_does_not_generate_next_terms_when_evaluator_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = root / "公积金.md"
+            doc.write_text("# 公积金\n\n上海住房公积金可以由单位缴存。\n", encoding="utf-8")
+            evaluator = FakeEvidenceEvaluator(
+                [
+                    EvidenceDecision(
+                        is_sufficient=False,
+                        needs_web=False,
+                        next_terms=[],
+                        missing_facts=["补充证据"],
+                        reason="评估器未给出下一轮本地检索词。",
+                    )
+                ]
+            )
+            agent = SearchAgent(
+                data_dir=root,
+                llm_client=FakeLlmClient(),
+                evidence_evaluator=evaluator,
+                max_rounds=3,
+            )
+
+            result = agent.ask("上海公积金是如何缴存的", web_policy="never", top_k=3)
+
+        self.assertEqual(len(result.search_rounds), 1)
+        self.assertFalse(result.answerable)
+        self.assertIn("补充证据", result.unable_reason)
+
+    def test_unanswerable_result_does_not_call_final_answer_llm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = root / "公积金.md"
+            doc.write_text("# 公积金\n\n上海住房公积金可以由单位缴存。\n", encoding="utf-8")
+            llm = FakeLlmClient()
+            evaluator = FakeEvidenceEvaluator(
+                [
+                    EvidenceDecision(
+                        is_sufficient=False,
+                        needs_web=False,
+                        missing_facts=["个人账户余额"],
+                        reason="缺少个人账户数据。",
+                    )
+                ]
+            )
+            agent = SearchAgent(
+                data_dir=root,
+                llm_client=llm,
+                evidence_evaluator=evaluator,
+                max_rounds=1,
+            )
+
+            result = agent.ask("帮我查询一下我个人公积金账户现在余额是多少？", web_policy="never", top_k=3)
+
+        self.assertFalse(result.answerable)
+        self.assertEqual(llm.calls, [])
+        self.assertIn("无法回答", result.answer)
+        self.assertIn("个人账户余额", result.answer)
+
     def test_evaluator_can_require_web_verification_for_policy_answer(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -233,7 +325,7 @@ class SearchAgentTests(unittest.TestCase):
                     EvidenceDecision(
                         is_sufficient=True,
                         needs_web=True,
-                        reason="Policy answer should be verified against official current sources.",
+                        reason="政策类答案需要联网核对官方现行来源。",
                     )
                 ]
             )
@@ -249,7 +341,7 @@ class SearchAgentTests(unittest.TestCase):
         self.assertTrue(result.used_web)
         self.assertEqual(len(web.calls), 1)
 
-    def test_default_evaluator_expands_current_fund_question_to_policy_year_terms(self):
+    def test_llm_evaluator_expands_current_fund_question_to_policy_year_terms(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_doc = root / "2018问答.md"
@@ -267,7 +359,7 @@ class SearchAgentTests(unittest.TestCase):
                 "月缴存额是基数分别乘以单位和职工比例之和，上限和下限按年度通知执行。\n",
                 encoding="utf-8",
             )
-            agent = SearchAgent(data_dir=root, llm_client=FakeLlmClient(), max_rounds=3)
+            agent = SearchAgent(data_dir=root, llm_client=FundPolicyLlmClient(), max_rounds=3)
 
             result = agent.ask("上海公积金是如何缴存的", web_policy="never", top_k=1)
 
@@ -275,7 +367,7 @@ class SearchAgentTests(unittest.TestCase):
         self.assertIn("2025年度", result.search_rounds[1].query_terms)
         self.assertEqual(result.local_sources[0].title, "2025年度调整通知")
 
-    def test_rule_guard_overrides_overconfident_llm_evaluation(self):
+    def test_llm_evaluation_is_not_overridden_by_rule_guard(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_doc = root / "2018问答.md"
@@ -297,8 +389,8 @@ class SearchAgentTests(unittest.TestCase):
 
             result = agent.ask("上海公积金是如何缴存的", web_policy="never", top_k=1)
 
-        self.assertGreaterEqual(len(result.search_rounds), 2)
-        self.assertEqual(result.local_sources[0].title, "2025年度调整通知")
+        self.assertEqual(len(result.search_rounds), 1)
+        self.assertEqual(result.local_sources[0].title, "2018年度住房公积金基数调整问答")
 
     def test_current_fund_answer_sources_filter_out_stale_years(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -325,6 +417,48 @@ class SearchAgentTests(unittest.TestCase):
         self.assertTrue(result.local_sources)
         self.assertTrue(all("2024年度" not in source.title for source in result.local_sources))
 
+    def test_current_policy_filter_ignores_document_ids_and_updated_at_years(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_doc = root / "2022通知.md"
+            old_doc.write_text(
+                "---\n"
+                "title: \"关于2022年度上海市调整住房公积金缴存基数、比例以及月缴存额上下限的通知\"\n"
+                "source_url: \"https://www.shzfgjj.cn/html/newxxgk/zcwj/gfxwj/209764.html\"\n"
+                "updated_at: \"2026-04-30 10:50:36\"\n"
+                "publish_date: \"2022-06-29\"\n"
+                "effective_date: \"2022-07-01\"\n"
+                "doc_status: \"active\"\n"
+                "primary_business_line: \"公积金\"\n"
+                "service_items: [\"缴存基数调整\", \"缴存比例调整\", \"月缴存额\"]\n"
+                "agent_eligible: true\n"
+                "---\n\n"
+                "# 关于2022年度上海市调整住房公积金缴存基数、比例以及月缴存额上下限的通知\n\n"
+                "住房公积金缴存基数、缴存比例和月缴存额上下限。\n",
+                encoding="utf-8",
+            )
+            current_doc = root / "2025通知.md"
+            current_doc.write_text(
+                "---\n"
+                "title: \"关于2025年度上海市调整住房公积金缴存基数、比例以及月缴存额上下限的通知\"\n"
+                "publish_date: \"2025-06-30\"\n"
+                "effective_date: \"2025-07-01\"\n"
+                "doc_status: \"active\"\n"
+                "primary_business_line: \"公积金\"\n"
+                "service_items: [\"缴存基数调整\", \"缴存比例调整\", \"月缴存额\"]\n"
+                "agent_eligible: true\n"
+                "---\n\n"
+                "# 关于2025年度上海市调整住房公积金缴存基数、比例以及月缴存额上下限的通知\n\n"
+                "住房公积金缴存基数、缴存比例和月缴存额上下限。\n",
+                encoding="utf-8",
+            )
+            agent = SearchAgent(data_dir=root, llm_client=FakeLlmClient(), max_rounds=1)
+
+            result = agent.ask("上海公积金是如何缴存的", web_policy="never", top_k=2)
+
+        self.assertTrue(result.local_sources)
+        self.assertEqual(result.local_sources[0].title, "关于2025年度上海市调整住房公积金缴存基数、比例以及月缴存额上下限的通知")
+
     def test_unrelated_sources_mark_answer_not_answerable(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -335,7 +469,34 @@ class SearchAgentTests(unittest.TestCase):
             result = agent.ask("在上海申领生育津贴需要什么条件和材料？", web_policy="never", top_k=5)
 
         self.assertFalse(result.answerable)
-        self.assertIn("生育津贴", result.unable_reason)
+        self.assertIn("领域不匹配", result.unable_reason)
+
+    def test_domain_mismatched_sources_are_not_sent_to_llm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = root / "官网" / "上海住房公积金网" / "政策解读" / "公积金.md"
+            doc.parent.mkdir(parents=True)
+            doc.write_text(
+                "---\n"
+                "title: \"上海住房公积金缴存问答\"\n"
+                "primary_business_line: \"公积金\"\n"
+                "business_lines: [\"公积金\"]\n"
+                "service_items: [\"缴存基数调整\"]\n"
+                "agent_eligible: true\n"
+                "---\n\n"
+                "# 上海住房公积金缴存问答\n\n"
+                "住房公积金月缴存额上下限。\n",
+                encoding="utf-8",
+            )
+            llm = FakeLlmClient()
+            agent = SearchAgent(data_dir=root, llm_client=llm, max_rounds=2)
+
+            result = agent.ask("上海发生工伤后，单位和个人应该怎么申请工伤认定？", web_policy="never", top_k=5)
+
+        self.assertFalse(result.answerable)
+        self.assertEqual(result.local_sources, [])
+        self.assertEqual(llm.calls, [])
+        self.assertIn("领域不匹配", result.unable_reason)
 
 
 def write_policy_fixture(root: Path) -> None:

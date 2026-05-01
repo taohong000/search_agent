@@ -3,7 +3,7 @@
 # Keep real API keys out of committed files.
 
 data_dir = "D:/查询机器人资料/本地数据"
-model = "deepseek-v4-flash"
+model = "deepseek-v4-pro"
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 [search]

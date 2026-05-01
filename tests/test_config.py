@@ -22,7 +22,7 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.dashscope_api_key, "dashscope-test-key")
         self.assertEqual(settings.serpapi_api_key, "serp-test-key")
-        self.assertEqual(settings.model, "deepseek-v4-flash")
+        self.assertEqual(settings.model, "deepseek-v4-pro")
         self.assertEqual(settings.data_dir, Path("D:/query-agent-data"))
 
     def test_reads_values_from_toml_config_file(self):

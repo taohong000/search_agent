@@ -105,7 +105,7 @@ def score_document(root: Path, path: Path, text: str, terms: list[str]) -> Local
     score += metadata_score_adjustment(metadata)
     score += requested_year_adjustment(terms, rel_path, title, metadata_text)
     snippet = extract_multi_snippet(body, matched, best_term)
-    return LocalSearchResult(path=path, title=title, snippet=snippet, matched_terms=matched, score=score)
+    return LocalSearchResult(path=path, title=title, snippet=snippet, matched_terms=matched, score=score, metadata=metadata)
 
 
 def term_weight(term: str) -> float:
@@ -173,12 +173,12 @@ def metadata_score_adjustment(metadata: dict[str, str]) -> float:
 
 
 def requested_year_adjustment(
-    """年份匹配调整：如果搜索词包含年份且文档匹配则大幅加分，不匹配则扣分。"""
     terms: list[str],
     rel_path: str,
     title: str,
     metadata_text: str,
 ) -> float:
+    """年份匹配调整：如果搜索词包含年份且文档匹配则大幅加分，不匹配则扣分。"""
     requested_years = set()
     for term in terms:
         requested_years.update(YEAR_RE.findall(term))

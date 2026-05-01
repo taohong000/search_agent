@@ -43,7 +43,7 @@ class Settings:
             serpapi_api_key=blank_to_none(
                 os.environ.get("SERPAPI_API_KEY", secrets.get("serpapi_api_key"))
             ),
-            model=os.environ.get("SEARCH_AGENT_MODEL", str(config.get("model", "deepseek-v4-flash"))),
+            model=os.environ.get("SEARCH_AGENT_MODEL", str(config.get("model", "deepseek-v4-pro"))),
             base_url=os.environ.get(
                 "DASHSCOPE_BASE_URL",
                 str(config.get("base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1")),

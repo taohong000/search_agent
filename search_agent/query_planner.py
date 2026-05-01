@@ -29,6 +29,14 @@ EXPANSIONS = {
     "没工作": ["失业", "灵活就业", "个人缴费"],
     "无业": ["失业", "灵活就业", "个人缴费"],
     "医保": ["医疗保险", "职工医保", "灵活就业"],
+    "医疗保险": ["医保", "职工医保"],
+    "断缴": ["补缴", "待遇", "医疗保险"],
+    "补缴": ["断缴", "待遇"],
+    "生育津贴": ["生育保险", "申领", "材料", "条件"],
+    "工伤": ["工伤认定", "工伤保险", "申请"],
+    "工伤认定": ["工伤", "工伤保险", "申请"],
+    "关系转移": ["转移接续", "养老保险"],
+    "转移": ["关系转移", "转移接续", "养老保险"],
     "公积金": ["住房公积金"],
     "缴纳": ["缴费", "参保缴费"],
     "交": ["缴费", "参保缴费"],
@@ -103,6 +111,17 @@ def domain_terms(question: str) -> list[str]:
         terms.extend(["月缴存额", "计算", "缴存基数"])
     if "基数调整" in question:
         terms.extend(["基数调整", "2025年度"])
+    if ("公积金" in question or "住房公积金" in question) and any(term in question for term in ["如何缴存", "怎么缴存", "缴存"]):
+        terms.extend(["缴存基数", "缴存比例", "月缴存额", "基数调整"])
+    if "医保" in question or "医疗保险" in question:
+        if "断缴" in question or "补缴" in question:
+            terms.extend(["医保", "医疗保险", "补缴", "待遇"])
+    if "生育津贴" in question:
+        terms.extend(["生育津贴", "生育保险", "申领", "材料", "条件"])
+    if "工伤" in question:
+        terms.extend(["工伤", "工伤认定", "工伤保险", "申请"])
+    if "关系转移" in question or "转移接续" in question:
+        terms.extend(["关系转移", "转移接续", "养老保险"])
     return terms
 
 
