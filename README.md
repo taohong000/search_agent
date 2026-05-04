@@ -1,6 +1,6 @@
 # 资料库关键词搜索 Agent
 
-一个不使用 RAG、向量库或 embedding 的资料库查询 CLI。它会搜索本地 Markdown 的路径、标题和正文，按需调用 SerpAPI 联网核对，再用阿里百炼 OpenAI 兼容接口生成回答。
+一个不使用 RAG、向量库或 embedding 的资料库查询 CLI。配置 `DASHSCOPE_API_KEY` 后，它会通过阿里百炼 OpenAI 兼容 Function Calling 循环自主调用本地正文搜索、文件名模糊搜索、文件读取和可选联网工具，最后生成回答。
 
 ## 环境变量
 
@@ -31,6 +31,13 @@ python -m search_agent ask "上海公积金如何缴存" --config search-agent.t
 默认会读取当前目录下的 `search-agent.toml`。也可以用 `--config` 指定路径。环境变量优先级高于配置文件，适合覆盖密钥或部署参数。
 
 仓库只提交 `search-agent.example.toml`。本地使用时复制为 `search-agent.toml`，真实密钥不要提交。
+
+`[agent] max_tool_steps` 控制 LLM tool-calling 主路径的最大工具循环步数；未配置时复用 `[search] max_rounds`，如果两者都未配置则默认 8。`[search] max_rounds` 仍用于无 `DASHSCOPE_API_KEY` 时的旧离线搜索兜底。
+
+```toml
+[agent]
+max_tool_steps = 8
+```
 
 `[web_fetch]` 默认关闭。打开后，联网搜索会先用 Jina Reader 抓网页正文，正文太短、失败或质量不足时再用本机 Crawl4AI 兜底。
 

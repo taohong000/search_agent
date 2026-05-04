@@ -59,6 +59,42 @@ class BailianClient:
             result = json.loads(response.read().decode("utf-8"))
         return result["choices"][0]["message"]["content"]
 
+    def chat_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        tool_choice="auto",
+        temperature: float = 0.2,
+    ) -> dict:
+        """调用百炼 OpenAI 兼容 Chat Completions tool-calling 接口。"""
+        if not self.api_key:
+            raise RuntimeError("DASHSCOPE_API_KEY is required for tool calling")
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "temperature": temperature,
+        }
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=data,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=60) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        message = result["choices"][0]["message"]
+        if message.get("content") is None:
+            message["content"] = ""
+        if not message.get("tool_calls"):
+            message["tool_calls"] = []
+        return message
+
     def evaluate_evidence(
         self,
         question: str,

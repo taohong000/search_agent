@@ -14,6 +14,7 @@ class Settings:
     model: str
     base_url: str
     max_rounds: int
+    max_tool_steps: int
     top_k: int
     web_fetch_enabled: bool
     web_fetch_max_pages: int
@@ -22,14 +23,20 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        return cls.from_sources(None)
+        return cls.from_config({})
 
     @classmethod
     def from_sources(cls, config_path: str | Path | None = None) -> "Settings":
         config = read_config(config_path)
+        return cls.from_config(config)
+
+    @classmethod
+    def from_config(cls, config: dict) -> "Settings":
         secrets = config.get("secrets", {})
         search = config.get("search", {})
+        agent = config.get("agent", {})
         default_data_dir = Path.cwd() / "\u672c\u5730\u6570\u636e"
+        max_rounds = int(os.environ.get("SEARCH_AGENT_MAX_ROUNDS", search.get("max_rounds", 3)))
         return cls(
             data_dir=Path(
                 os.environ.get(
@@ -48,7 +55,13 @@ class Settings:
                 "DASHSCOPE_BASE_URL",
                 str(config.get("base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1")),
             ),
-            max_rounds=int(os.environ.get("SEARCH_AGENT_MAX_ROUNDS", search.get("max_rounds", 3))),
+            max_rounds=max_rounds,
+            max_tool_steps=int(
+                os.environ.get(
+                    "SEARCH_AGENT_MAX_TOOL_STEPS",
+                    agent.get("max_tool_steps", search.get("max_rounds", 8)),
+                )
+            ),
             top_k=int(os.environ.get("SEARCH_AGENT_TOP_K", search.get("top_k", 8))),
             web_fetch_enabled=str(
                 os.environ.get(

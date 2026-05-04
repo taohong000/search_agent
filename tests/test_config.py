@@ -56,6 +56,7 @@ serpapi_api_key = "serp-from-file"
         self.assertEqual(settings.model, "deepseek-v4-flash")
         self.assertEqual(settings.base_url, "https://example.test/v1")
         self.assertEqual(settings.max_rounds, 2)
+        self.assertEqual(settings.max_tool_steps, 2)
         self.assertEqual(settings.top_k, 6)
         self.assertTrue(settings.web_fetch_enabled)
         self.assertEqual(settings.web_fetch_max_pages, 4)
@@ -92,6 +93,26 @@ dashscope_api_key = "dashscope-from-file"
         self.assertEqual(settings.data_dir, Path("D:/docs-from-env"))
         self.assertEqual(settings.model, "model-from-env")
         self.assertEqual(settings.dashscope_api_key, "dashscope-from-env")
+
+    def test_agent_max_tool_steps_can_override_legacy_rounds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "search-agent.toml"
+            config_path.write_text(
+                """
+[search]
+max_rounds = 2
+
+[agent]
+max_tool_steps = 9
+""".strip(),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                settings = Settings.from_sources(config_path)
+
+        self.assertEqual(settings.max_rounds, 2)
+        self.assertEqual(settings.max_tool_steps, 9)
 
 
 if __name__ == "__main__":

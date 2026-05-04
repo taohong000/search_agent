@@ -10,6 +10,9 @@ base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 max_rounds = 3
 top_k = 8
 
+[agent]
+max_tool_steps = 8
+
 [web_fetch]
 enabled = true
 provider = "jina"
