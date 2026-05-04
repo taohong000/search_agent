@@ -39,6 +39,17 @@ python -m search_agent ask "上海公积金如何缴存" --config search-agent.t
 max_tool_steps = 8
 ```
 
+日志默认开启，写入 `logs/search-agent.log`，用于调试每轮模型工具选择、工具输入输出摘要、本地/网络检索结果和最终决策。日志不会写入 API Key。可以在配置或环境变量中关闭：
+
+```toml
+[logging]
+enabled = true
+level = "INFO"
+file = "logs/search-agent.log"
+```
+
+对应环境变量：`SEARCH_AGENT_LOG_ENABLED`、`SEARCH_AGENT_LOG_LEVEL`、`SEARCH_AGENT_LOG_FILE`。
+
 `[web_fetch]` 默认关闭。打开后，联网搜索会先用 Jina Reader 抓网页正文，正文太短、失败或质量不足时再用本机 Crawl4AI 兜底。
 
 ```toml

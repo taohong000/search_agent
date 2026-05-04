@@ -9,8 +9,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .logging_config import get_logger
 from .local_search import extract_title, read_utf8, split_front_matter
 from .models import LocalSearchResult, SearchRound, WebPageContent, WebSearchResult
+
+
+logger = get_logger("tools")
 
 
 @dataclass
@@ -30,6 +34,7 @@ class SearchToolRunner:
         self.state = ToolRunState()
 
     def run(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        logger.info("tool.run name=%s args=%s", name, args)
         try:
             if name == "rg_search":
                 return self.rg_search(**args)
@@ -43,8 +48,10 @@ class SearchToolRunner:
                 return self.web_fetch_tool(**args)
             return {"ok": False, "error": f"unknown tool: {name}"}
         except TypeError as exc:
+            logger.warning("tool.run invalid_arguments name=%s error=%s", name, exc)
             return {"ok": False, "error": f"invalid arguments for {name}: {exc}"}
         except Exception as exc:
+            logger.exception("tool.run failed name=%s error=%s", name, exc)
             return {"ok": False, "error": f"{name} failed: {exc}"}
 
     def rg_search(
@@ -59,15 +66,27 @@ class SearchToolRunner:
         max_results = clamp_int(max_results, 1, 100, 20)
         context = clamp_int(context, 0, 10, 2)
         if not query:
+            logger.warning("rg_search missing query")
             return {"ok": False, "error": "query is required", "results": []}
         search_roots = self._resolve_roots(roots)
         if not search_roots:
+            logger.info("rg_search no roots query=%r roots=%s", query, roots)
             return {"ok": True, "query": query, "results": []}
 
         results = self._rg_subprocess(query, search_roots, globs, context, max_results)
         if results is None:
+            logger.info("rg_search using python fallback query=%r", query)
             results = self._python_content_search(query, search_roots, globs, context, max_results)
         self.state.search_rounds.append(SearchRound(query_terms=[query], hit_count=len(results)))
+        logger.info(
+            "rg_search done query=%r roots=%s globs=%s context=%s max_results=%s hits=%s",
+            query,
+            [str(root) for root in search_roots],
+            globs,
+            context,
+            max_results,
+            len(results),
+        )
         return {"ok": True, "query": query, "results": results}
 
     def fuzzy_file_search(
@@ -79,6 +98,7 @@ class SearchToolRunner:
         query = str(query or "").strip()
         limit = clamp_int(limit, 1, 100, 20)
         if not query:
+            logger.warning("fuzzy_file_search missing query")
             return {"ok": False, "error": "query is required", "results": []}
         search_roots = self._resolve_roots(roots)
         candidates = sorted({path for root in search_roots for path in root.rglob("*.md")})
@@ -95,16 +115,26 @@ class SearchToolRunner:
             for score, rel, path in scored[:limit]
         ]
         self.state.search_rounds.append(SearchRound(query_terms=[query], hit_count=len(results)))
+        logger.info(
+            "fuzzy_file_search done query=%r roots=%s candidates=%s results=%s",
+            query,
+            [str(root) for root in search_roots],
+            len(candidates),
+            len(results),
+        )
         return {"ok": True, "query": query, "results": results}
 
     def read_local_file(self, path: str, start_line: int = 1, max_lines: int = 120) -> dict[str, Any]:
         resolved = self._resolve_local_path(path)
         if resolved is None:
+            logger.warning("read_local_file rejected path=%r reason=outside_or_missing", path)
             return {"ok": False, "error": "path is outside data_dir or does not exist"}
         if resolved.suffix.lower() != ".md":
+            logger.warning("read_local_file rejected path=%s reason=non_markdown", resolved)
             return {"ok": False, "error": "only Markdown files can be read"}
         text = read_utf8(resolved)
         if text is None:
+            logger.warning("read_local_file rejected path=%s reason=utf8", resolved)
             return {"ok": False, "error": "file is not readable as UTF-8"}
         lines = text.splitlines()
         start_line = clamp_int(start_line, 1, max(len(lines), 1), 1)
@@ -121,6 +151,14 @@ class SearchToolRunner:
             metadata=metadata,
         )
         self.state.local_sources[str(resolved)] = result
+        logger.info(
+            "read_local_file done path=%s title=%r start_line=%s end_line=%s chars=%s",
+            resolved,
+            title,
+            start_line,
+            end_line,
+            len("\n".join(numbered)),
+        )
         return {
             "ok": True,
             "path": self._display_path(resolved),
@@ -132,12 +170,14 @@ class SearchToolRunner:
 
     def web_search_tool(self, query: str, num: int = 5) -> dict[str, Any]:
         if self.web_search is None:
+            logger.warning("web_search unavailable query=%r", query)
             return {"ok": False, "error": "web_search is unavailable", "results": []}
         num = clamp_int(num, 1, 10, 5)
         results = self.web_search.search(str(query or ""), num=num)
         self.state.used_web = True
         for item in results:
             self.state.web_sources[item.url] = item
+        logger.info("web_search done query=%r num=%s results=%s", query, num, [item.url for item in results])
         return {
             "ok": True,
             "query": query,
@@ -146,6 +186,7 @@ class SearchToolRunner:
 
     def web_fetch_tool(self, urls: list[str], query_terms: list[str] | None = None) -> dict[str, Any]:
         if self.web_fetcher is None:
+            logger.warning("web_fetch unavailable urls=%s", urls)
             return {"ok": False, "error": "web_fetch is unavailable", "pages": []}
         query_terms = [str(item) for item in query_terms or []]
         results = [
@@ -158,6 +199,11 @@ class SearchToolRunner:
         self.state.used_web = True
         for page in pages:
             self.state.web_pages[page.url] = page
+        logger.info(
+            "web_fetch done urls=%s pages=%s",
+            urls,
+            [(page.url, page.provider, page.status, len(page.text)) for page in pages],
+        )
         return {"ok": True, "pages": [web_page_to_dict(page) for page in pages]}
 
     def local_sources_from_final(self, requested: Any) -> list[LocalSearchResult]:

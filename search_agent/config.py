@@ -20,6 +20,9 @@ class Settings:
     web_fetch_max_pages: int
     web_fetch_max_chars: int
     web_fetch_timeout_seconds: int
+    log_enabled: bool
+    log_level: str
+    log_file: Path
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -35,6 +38,7 @@ class Settings:
         secrets = config.get("secrets", {})
         search = config.get("search", {})
         agent = config.get("agent", {})
+        logging_config = config.get("logging", {})
         default_data_dir = Path.cwd() / "\u672c\u5730\u6570\u636e"
         max_rounds = int(os.environ.get("SEARCH_AGENT_MAX_ROUNDS", search.get("max_rounds", 3)))
         return cls(
@@ -86,6 +90,25 @@ class Settings:
                 os.environ.get(
                     "SEARCH_AGENT_WEB_FETCH_TIMEOUT_SECONDS",
                     config.get("web_fetch", {}).get("timeout_seconds", 30),
+                )
+            ),
+            log_enabled=str(
+                os.environ.get(
+                    "SEARCH_AGENT_LOG_ENABLED",
+                    logging_config.get("enabled", True),
+                )
+            ).lower()
+            in {"1", "true", "yes", "on"},
+            log_level=str(
+                os.environ.get(
+                    "SEARCH_AGENT_LOG_LEVEL",
+                    logging_config.get("level", "INFO"),
+                )
+            ),
+            log_file=Path(
+                os.environ.get(
+                    "SEARCH_AGENT_LOG_FILE",
+                    str(logging_config.get("file", "logs/search-agent.log")),
                 )
             ),
         )

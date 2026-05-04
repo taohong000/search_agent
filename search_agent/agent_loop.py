@@ -6,6 +6,7 @@ from pathlib import Path
 from .config import Settings
 from .evidence_evaluator import EvidenceEvaluator
 from .llm_client import BailianClient
+from .logging_config import get_logger, summarize_text
 from .local_search import LocalSearchEngine
 from .models import AgentAnswer, EvidenceDecision, LocalSearchResult, SearchRound, WebSearchResult
 from .query_planner import QueryPlanner
@@ -25,6 +26,9 @@ from .relevance import (
 from .tools import SearchToolRunner, tool_content
 from .web_fetch import Crawl4AIProvider, JinaReaderProvider, WebFetchRouter
 from .web_search import SerpApiSearch
+
+
+logger = get_logger("agent_loop")
 
 
 class SearchAgent:
@@ -75,12 +79,39 @@ class SearchAgent:
         )
 
     def ask(self, question: str, web_policy: str = "auto", top_k: int = 8) -> AgentAnswer:
+        logger.info(
+            "ask start mode=%s question=%r web_policy=%s top_k=%s data_dir=%s",
+            "tool_loop" if self._can_use_tool_loop() else "legacy",
+            question,
+            web_policy,
+            top_k,
+            self.local_search.root,
+        )
         if self._can_use_tool_loop():
             try:
-                return self._ask_with_tools(question, web_policy=web_policy, top_k=top_k)
-            except Exception:
+                result = self._ask_with_tools(question, web_policy=web_policy, top_k=top_k)
+                logger.info(
+                    "ask done mode=tool_loop answerable=%s used_web=%s local_sources=%s web_sources=%s rounds=%s",
+                    result.answerable,
+                    result.used_web,
+                    len(result.local_sources),
+                    len(result.web_sources),
+                    len(result.search_rounds),
+                )
+                return result
+            except Exception as exc:
+                logger.exception("tool_loop failed; falling back to legacy error=%s", exc)
                 return self._ask_legacy(question, web_policy=web_policy, top_k=top_k)
-        return self._ask_legacy(question, web_policy=web_policy, top_k=top_k)
+        result = self._ask_legacy(question, web_policy=web_policy, top_k=top_k)
+        logger.info(
+            "ask done mode=legacy answerable=%s used_web=%s local_sources=%s web_sources=%s rounds=%s",
+            result.answerable,
+            result.used_web,
+            len(result.local_sources),
+            len(result.web_sources),
+            len(result.search_rounds),
+        )
+        return result
 
     def _can_use_tool_loop(self) -> bool:
         return bool(getattr(self.llm_client, "api_key", None)) and hasattr(self.llm_client, "chat_with_tools")
@@ -95,11 +126,25 @@ class SearchAgent:
         ]
 
         final_payload = None
-        for _ in range(self.max_tool_steps):
+        for step in range(1, self.max_tool_steps + 1):
+            logger.info(
+                "tool_loop step=%s/%s messages=%s available_tools=%s",
+                step,
+                self.max_tool_steps,
+                len(messages),
+                sorted(available_tool_names),
+            )
             message = self.llm_client.chat_with_tools(messages, tools, tool_choice="auto")
             messages.append(normalize_assistant_message(message))
             tool_calls = message.get("tool_calls") or []
+            logger.info(
+                "tool_loop assistant step=%s tool_calls=%s content=%s",
+                step,
+                [tool_call_name(call) for call in tool_calls],
+                summarize_text(message.get("content") or ""),
+            )
             if not tool_calls:
+                logger.info("tool_loop step=%s no tool call; prompting for final_answer", step)
                 messages.append(
                     {
                         "role": "user",
@@ -111,10 +156,18 @@ class SearchAgent:
             for call in tool_calls:
                 name = tool_call_name(call)
                 args, error = parse_tool_arguments(call)
+                logger.info("tool_call requested step=%s name=%s args=%s parse_error=%s", step, name, args, error)
                 if name == "final_answer":
                     if should_accept_final_answer(runner, args, error, web_policy):
+                        logger.info(
+                            "final_answer accepted step=%s answerable=%s unable_reason=%s",
+                            step,
+                            args.get("answerable") if error is None else False,
+                            args.get("unable_reason") if error is None else error,
+                        )
                         final_payload = args if error is None else {"answerable": False, "unable_reason": error}
                     else:
+                        logger.warning("final_answer rejected step=%s reason=premature", step)
                         messages.append(
                             {
                                 "role": "tool",
@@ -132,6 +185,7 @@ class SearchAgent:
                         )
                     break
                 result = dispatch_tool_call(runner, name, args, error, available_tool_names)
+                logger.info("tool_call result step=%s name=%s summary=%s", step, name, summarize_tool_result(result))
                 messages.append(
                     {
                         "role": "tool",
@@ -143,6 +197,7 @@ class SearchAgent:
                 break
 
         if final_payload is None:
+            logger.info("tool_loop entering finalization messages=%s", len(messages))
             messages.append(
                 {
                     "role": "user",
@@ -152,17 +207,41 @@ class SearchAgent:
                     ),
                 }
             )
-            for _ in range(2):
+            for final_step in range(1, 3):
                 forced = self.llm_client.chat_with_tools(messages, tools, tool_choice="auto")
                 messages.append(normalize_assistant_message(forced))
                 tool_calls = forced.get("tool_calls") or []
+                logger.info(
+                    "tool_loop finalization step=%s tool_calls=%s",
+                    final_step,
+                    [tool_call_name(call) for call in tool_calls],
+                )
                 for call in tool_calls:
                     name = tool_call_name(call)
                     args, error = parse_tool_arguments(call)
+                    logger.info(
+                        "finalization tool_call requested step=%s name=%s args=%s parse_error=%s",
+                        final_step,
+                        name,
+                        args,
+                        error,
+                    )
                     if name == "final_answer":
+                        logger.info(
+                            "final_answer accepted finalization_step=%s answerable=%s unable_reason=%s",
+                            final_step,
+                            args.get("answerable") if error is None else False,
+                            args.get("unable_reason") if error is None else error,
+                        )
                         final_payload = args if error is None else {"answerable": False, "unable_reason": error}
                         break
                     result = dispatch_tool_call(runner, name, args, error, available_tool_names)
+                    logger.info(
+                        "finalization tool_call result step=%s name=%s summary=%s",
+                        final_step,
+                        name,
+                        summarize_tool_result(result),
+                    )
                     messages.append(
                         {
                             "role": "tool",
@@ -174,6 +253,7 @@ class SearchAgent:
                     break
 
         if final_payload is None:
+            logger.warning("tool_loop exhausted without final_answer")
             final_payload = {
                 "answer": build_unanswerable_answer(question, "达到工具调用上限，模型未给出最终答案。", [], []),
                 "answerable": False,
@@ -185,6 +265,16 @@ class SearchAgent:
         unable_reason = "" if answerable else str(final_payload.get("unable_reason") or "证据不足。")
         local_sources = runner.local_sources_from_final(final_payload.get("local_sources"))[:top_k]
         web_sources = runner.web_sources_from_final(final_payload.get("web_sources"))
+        logger.info(
+            "tool_loop final answerable=%s unable_reason=%s answer_preview=%s local_sources=%s web_sources=%s web_pages=%s rounds=%s",
+            answerable,
+            unable_reason,
+            summarize_text(answer),
+            [str(source.path) for source in local_sources],
+            [source.url for source in web_sources],
+            len(runner.state.web_pages),
+            [(round_item.query_terms, round_item.hit_count) for round_item in runner.state.search_rounds],
+        )
         if not answer:
             answer = build_unanswerable_answer(question, unable_reason, local_sources, web_sources)
         return AgentAnswer(
@@ -202,6 +292,7 @@ class SearchAgent:
         """主入口：接收用户问题，执行多轮本地搜索 + 可选网络搜索，返回最终答案。"""
         # 第一步：理解问题，生成初始搜索计划（关键词 + 是否需要网络验证）
         plan = self.planner.initial_plan(question)
+        logger.info("legacy plan terms=%s needs_web=%s", plan.terms, plan.needs_web)
         all_local: list[LocalSearchResult] = []
         rounds: list[SearchRound] = []
         terms = plan.terms
@@ -210,9 +301,16 @@ class SearchAgent:
         final_decision: EvidenceDecision | None = None
 
         # 第二步：多轮本地搜索循环，每轮由评估器判断证据是否充分
-        for _ in range(self.max_rounds):
+        for round_index in range(1, self.max_rounds + 1):
             hits = self.local_search.search(terms, top_k=top_k)
             rounds.append(SearchRound(query_terms=terms, hit_count=len(hits)))
+            logger.info(
+                "legacy local_search round=%s terms=%s hit_count=%s titles=%s",
+                round_index,
+                terms,
+                len(hits),
+                [hit.title for hit in hits[:5]],
+            )
             # 合并去重，保留同一文档的最高分命中
             all_local = merge_local_sources(all_local, hits)
             for hit in hits:
@@ -221,6 +319,15 @@ class SearchAgent:
             decision = self.evidence_evaluator.evaluate(question, terms, all_local, rounds, plan)
             final_decision = decision
             evaluator_needs_web = evaluator_needs_web or decision.needs_web
+            logger.info(
+                "legacy evidence round=%s sufficient=%s needs_web=%s next_terms=%s missing=%s reason=%s",
+                round_index,
+                decision.is_sufficient,
+                decision.needs_web,
+                decision.next_terms,
+                decision.missing_facts,
+                decision.reason,
+            )
             if decision.is_sufficient:
                 break
             # 下一轮本地检索词由评估器生成；为空表示不继续本地搜索。
@@ -231,19 +338,39 @@ class SearchAgent:
 
         # 第三步：根据策略决定是否进行网络搜索
         use_web = should_use_web(web_policy, plan.needs_web or evaluator_needs_web, all_local)
+        logger.info(
+            "legacy web decision web_policy=%s use_web=%s plan_needs_web=%s evaluator_needs_web=%s local_sources=%s",
+            web_policy,
+            use_web,
+            plan.needs_web,
+            evaluator_needs_web,
+            len(all_local),
+        )
         web_sources: list[WebSearchResult] = []
         web_pages = []
         if use_web and self.web_search is not None:
             web_query = " ".join(plan.terms[:8])
             web_sources = self.web_search.search(web_query, num=5)
+            logger.info("legacy web_search query=%r results=%s", web_query, [source.url for source in web_sources])
             # 抓取网页正文用于交叉验证日期、比例等关键数据
             if self.web_fetcher is not None:
                 web_pages = self.web_fetcher.fetch_many(web_sources, plan.terms)
+                logger.info(
+                    "legacy web_fetch pages=%s",
+                    [(page.url, page.provider, page.status, len(page.text)) for page in web_pages],
+                )
 
         # 第四步：排序、过滤本地来源，证据不足时直接返回缺口说明
         all_local = filter_final_sources(question, rank_final_sources(question, all_local))
         answerable = final_decision.is_sufficient if final_decision is not None else bool(all_local)
         unable_reason = "" if answerable else build_unable_reason(final_decision)
+        logger.info(
+            "legacy final answerable=%s unable_reason=%s local_sources=%s web_sources=%s",
+            answerable,
+            unable_reason,
+            [str(source.path) for source in all_local[:top_k]],
+            [source.url for source in web_sources],
+        )
         if answerable:
             llm_client = self.llm_client or BailianClient(None, "deepseek-v4-flash", "")
             answer = llm_client.answer(question, all_local[:top_k], web_sources, web_pages)
@@ -299,6 +426,33 @@ def dispatch_tool_call(
     if name not in available_tool_names:
         return {"ok": False, "error": f"tool unavailable: {name}"}
     return runner.run(name, args)
+
+
+def summarize_tool_result(result: dict) -> dict:
+    summary = {
+        "ok": result.get("ok"),
+        "error": result.get("error"),
+    }
+    if "results" in result:
+        summary["results"] = len(result.get("results") or [])
+        summary["sample"] = (result.get("results") or [])[:2]
+    if "pages" in result:
+        summary["pages"] = [
+            {
+                "url": page.get("url"),
+                "provider": page.get("provider"),
+                "status": page.get("status"),
+                "chars": len(page.get("text") or ""),
+            }
+            for page in (result.get("pages") or [])[:5]
+        ]
+    if "content" in result:
+        summary["path"] = result.get("path")
+        summary["title"] = result.get("title")
+        summary["start_line"] = result.get("start_line")
+        summary["end_line"] = result.get("end_line")
+        summary["content"] = summarize_text(result.get("content") or "")
+    return summary
 
 
 def should_accept_final_answer(

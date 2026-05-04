@@ -4,6 +4,7 @@ import argparse
 
 from .agent_loop import SearchAgent
 from .config import Settings
+from .logging_config import configure_logging, get_logger
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,8 +30,31 @@ def main(argv: list[str] | None = None) -> int:
             policy = "never"
 
         settings = Settings.from_sources(args.config)
+        configure_logging(
+            enabled=settings.log_enabled,
+            level=settings.log_level,
+            file_path=settings.log_file,
+        )
+        logger = get_logger("cli")
+        logger.info(
+            "cli.ask start question=%r web_policy=%s top_k=%s config=%s data_dir=%s model=%s",
+            args.question,
+            policy,
+            args.top_k or settings.top_k,
+            args.config,
+            settings.data_dir,
+            settings.model,
+        )
         agent = SearchAgent.from_settings(settings)
         result = agent.ask(args.question, web_policy=policy, top_k=args.top_k or settings.top_k)
+        logger.info(
+            "cli.ask done answerable=%s used_web=%s local_sources=%s web_sources=%s rounds=%s",
+            result.answerable,
+            result.used_web,
+            len(result.local_sources),
+            len(result.web_sources),
+            len(result.search_rounds),
+        )
         print(result.answer)
         if args.show_sources:
             print("\n\u672c\u5730\u6765\u6e90:")

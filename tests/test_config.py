@@ -62,6 +62,9 @@ serpapi_api_key = "serp-from-file"
         self.assertEqual(settings.web_fetch_max_pages, 4)
         self.assertEqual(settings.web_fetch_max_chars, 20000)
         self.assertEqual(settings.web_fetch_timeout_seconds, 30)
+        self.assertTrue(settings.log_enabled)
+        self.assertEqual(settings.log_level, "INFO")
+        self.assertEqual(settings.log_file, Path("logs/search-agent.log"))
         self.assertEqual(settings.dashscope_api_key, "dashscope-from-file")
         self.assertEqual(settings.serpapi_api_key, "serp-from-file")
 
@@ -113,6 +116,26 @@ max_tool_steps = 9
 
         self.assertEqual(settings.max_rounds, 2)
         self.assertEqual(settings.max_tool_steps, 9)
+
+    def test_logging_config_can_be_disabled_and_customized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "search-agent.toml"
+            config_path.write_text(
+                """
+[logging]
+enabled = false
+level = "DEBUG"
+file = "tmp/search.log"
+""".strip(),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                settings = Settings.from_sources(config_path)
+
+        self.assertFalse(settings.log_enabled)
+        self.assertEqual(settings.log_level, "DEBUG")
+        self.assertEqual(settings.log_file, Path("tmp/search.log"))
 
 
 if __name__ == "__main__":

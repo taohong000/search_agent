@@ -13,6 +13,11 @@ top_k = 8
 [agent]
 max_tool_steps = 8
 
+[logging]
+enabled = true
+level = "INFO"
+file = "logs/search-agent.log"
+
 [web_fetch]
 enabled = true
 provider = "jina"
