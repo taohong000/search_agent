@@ -25,7 +25,7 @@ from .relevance import (
 )
 from .tools import SearchToolRunner, tool_content
 from .web_fetch import Crawl4AIProvider, JinaReaderProvider, WebFetchRouter
-from .web_search import SerpApiSearch
+from .web_search import BochaSearch
 
 
 logger = get_logger("agent_loop")
@@ -60,7 +60,7 @@ class SearchAgent:
                 model=settings.model,
                 base_url=settings.base_url,
             ),
-            web_search=SerpApiSearch(settings.serpapi_api_key),
+            web_search=BochaSearch(settings.bocha_api_key),
             web_fetcher=WebFetchRouter(
                 jina_provider=JinaReaderProvider(
                     timeout_seconds=settings.web_fetch_timeout_seconds,

@@ -10,7 +10,7 @@ from pathlib import Path
 class Settings:
     data_dir: Path
     dashscope_api_key: str | None
-    serpapi_api_key: str | None
+    bocha_api_key: str | None
     model: str
     base_url: str
     max_rounds: int
@@ -51,8 +51,8 @@ class Settings:
             dashscope_api_key=blank_to_none(
                 os.environ.get("DASHSCOPE_API_KEY", secrets.get("dashscope_api_key"))
             ),
-            serpapi_api_key=blank_to_none(
-                os.environ.get("SERPAPI_API_KEY", secrets.get("serpapi_api_key"))
+            bocha_api_key=blank_to_none(
+                os.environ.get("BOCHA_API_KEY", secrets.get("bocha_api_key"))
             ),
             model=os.environ.get("SEARCH_AGENT_MODEL", str(config.get("model", "deepseek-v4-pro"))),
             base_url=os.environ.get(

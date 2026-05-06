@@ -1,43 +1,49 @@
 from __future__ import annotations
 
 import json
-import urllib.parse
 import urllib.request
 
 from .models import WebSearchResult
 
 
-class SerpApiSearch:
+class BochaSearch:
+    """博查 Web Search API 封装。"""
+
+    ENDPOINT = "https://api.bocha.cn/v1/web-search"
+
     def __init__(self, api_key: str | None):
         self.api_key = api_key
 
     def search(self, query: str, num: int = 5) -> list[WebSearchResult]:
         if not self.api_key:
             return []
-        params = urllib.parse.urlencode(
-            {
-                "engine": "google",
-                "q": query,
-                "api_key": self.api_key,
-                "num": str(num),
-                "hl": "zh-cn",
-                "gl": "cn",
-            }
+        payload = json.dumps(
+            {"query": query, "freshness": "noLimit", "summary": True, "count": num},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self.ENDPOINT,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
         )
-        url = f"https://serpapi.com/search.json?{params}"
-        request = urllib.request.Request(url, headers={"User-Agent": "search-agent/0.1"})
-        with urllib.request.urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return []
 
         results: list[WebSearchResult] = []
-        for item in payload.get("organic_results", [])[:num]:
+        for item in (body.get("data", {}).get("webPages", {}).get("value") or [])[:num]:
             results.append(
                 WebSearchResult(
-                    title=item.get("title", ""),
-                    url=item.get("link", ""),
-                    snippet=item.get("snippet", ""),
-                    date=item.get("date"),
+                    title=item.get("name", ""),
+                    url=item.get("url", ""),
+                    snippet=item.get("snippet", "") or item.get("summary", ""),
+                    date=item.get("datePublished"),
                 )
             )
         return results
-

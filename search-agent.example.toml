@@ -28,4 +28,4 @@ timeout_seconds = 10
 
 [secrets]
 dashscope_api_key = ""
-serpapi_api_key = ""
+bocha_api_key = ""

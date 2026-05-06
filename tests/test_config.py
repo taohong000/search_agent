@@ -13,7 +13,7 @@ class SettingsTests(unittest.TestCase):
             os.environ,
             {
                 "DASHSCOPE_API_KEY": "dashscope-test-key",
-                "SERPAPI_API_KEY": "serp-test-key",
+                "BOCHA_API_KEY": "bocha-test-key",
                 "SEARCH_AGENT_DATA_DIR": "D:/query-agent-data",
             },
             clear=True,
@@ -21,7 +21,7 @@ class SettingsTests(unittest.TestCase):
             settings = Settings.from_env()
 
         self.assertEqual(settings.dashscope_api_key, "dashscope-test-key")
-        self.assertEqual(settings.serpapi_api_key, "serp-test-key")
+        self.assertEqual(settings.bocha_api_key, "bocha-test-key")
         self.assertEqual(settings.model, "deepseek-v4-pro")
         self.assertEqual(settings.data_dir, Path("D:/query-agent-data"))
 
@@ -44,7 +44,7 @@ max_pages = 4
 
 [secrets]
 dashscope_api_key = "dashscope-from-file"
-serpapi_api_key = "serp-from-file"
+bocha_api_key = "bocha-from-file"
 """.strip(),
                 encoding="utf-8",
             )
@@ -66,7 +66,7 @@ serpapi_api_key = "serp-from-file"
         self.assertEqual(settings.log_level, "INFO")
         self.assertEqual(settings.log_file, Path("logs/search-agent.log"))
         self.assertEqual(settings.dashscope_api_key, "dashscope-from-file")
-        self.assertEqual(settings.serpapi_api_key, "serp-from-file")
+        self.assertEqual(settings.bocha_api_key, "bocha-from-file")
 
     def test_environment_values_override_config_file(self):
         with tempfile.TemporaryDirectory() as tmp:
