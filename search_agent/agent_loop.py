@@ -67,7 +67,7 @@ class SearchAgent:
                     max_chars=settings.web_fetch_max_chars,
                 ),
                 crawl4ai_provider=Crawl4AIProvider(
-                    timeout_seconds=max(settings.web_fetch_timeout_seconds, 60),
+                    timeout_seconds=max(settings.web_fetch_timeout_seconds * 2, 20),
                     max_chars=settings.web_fetch_max_chars,
                 ),
                 max_pages=settings.web_fetch_max_pages,
@@ -477,6 +477,8 @@ def build_tool_loop_system_prompt(web_policy: str) -> str:
         "你是资料库搜索智能体。你必须通过工具收集证据，再调用 final_answer 结束。"
         "优先使用 fuzzy_file_search 或 rg_search 找候选资料，再用 read_local_file 读取足够片段。"
         "在调用 final_answer 前，至少先调用一次 rg_search 或 fuzzy_file_search；找到候选文件后必须 read_local_file。"
+        "效率要求：读取 2-3 个最相关文件后即可调用 final_answer，不要反复读取大量文件。"
+        "如果已有足够信息回答，立即调用 final_answer，不要继续搜索。"
         "所有回答必须基于已观察到的工具结果；证据不足时 final_answer(answerable=false)。"
         "本地工具只读，且只能访问 data_dir 内文件。"
         "地域过滤：文档 front matter 中有 city_code 字段（如 SH=上海、BJ=北京）。"

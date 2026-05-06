@@ -22,9 +22,9 @@ file = "logs/search-agent.log"
 enabled = true
 provider = "jina"
 fallback_provider = "crawl4ai"
-max_pages = 3
-max_chars_per_page = 20000
-timeout_seconds = 30
+max_pages = 2
+max_chars_per_page = 15000
+timeout_seconds = 10
 
 [secrets]
 dashscope_api_key = ""

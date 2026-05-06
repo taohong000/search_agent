@@ -35,7 +35,7 @@ class JinaReaderProvider:
 
 
 class Crawl4AIProvider:
-    def __init__(self, timeout_seconds: int = 60, max_chars: int = 20000):
+    def __init__(self, timeout_seconds: int = 20, max_chars: int = 20000):
         self.timeout_seconds = timeout_seconds
         self.max_chars = max_chars
 
