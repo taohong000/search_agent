@@ -6,6 +6,7 @@ import contextlib
 import logging
 import queue
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import gradio as gr
@@ -130,9 +131,17 @@ def build_sources_markdown(agent_answer: AgentAnswer | None) -> str:
     if agent_answer.local_sources:
         lines.append("### 本地来源\n")
         for src in agent_answer.local_sources:
-            lines.append(f"- **{src.title}** (`{src.path}`)")
+            meta = src.metadata or {}
+            source_url = meta.get("source_url", "")
+            if source_url:
+                lines.append(f"- **[{src.title}]({source_url})**")
+            else:
+                lines.append(f"- **{src.title}**")
             if src.matched_terms:
                 lines.append(f"  命中关键词: {', '.join(src.matched_terms)}")
+            version_info = _read_version_info(src.path, meta)
+            if version_info:
+                lines.append(version_info)
     if agent_answer.web_sources:
         lines.append("\n### 网络来源\n")
         for src in agent_answer.web_sources:
@@ -140,6 +149,92 @@ def build_sources_markdown(agent_answer: AgentAnswer | None) -> str:
             if src.date:
                 lines.append(f"  日期: {src.date}")
     return "\n".join(lines) if lines else "无来源信息"
+
+
+def _read_version_info(doc_path: Path, metadata: dict) -> str:
+    """Read version index file if version_index_path exists in metadata."""
+    vip = metadata.get("version_index_path", "").strip()
+    if not vip:
+        return ""
+    index_path = doc_path.parent / vip
+    try:
+        text = index_path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    return _parse_version_index(text)
+
+
+def _parse_version_index(text: str) -> str:
+    """Extract version table rows from a version index Markdown file."""
+    lines: list[str] = []
+    pending_header: str | None = None
+    in_table = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("|") and "---" in stripped:
+            # This is a separator; the previous line was the header
+            in_table = True
+            continue
+        if stripped.startswith("|") and not in_table:
+            # Potential header row (before separator)
+            pending_header = stripped
+            continue
+        if in_table and stripped.startswith("|"):
+            cols = [c.strip() for c in stripped.strip("|").split("|")]
+            # Determine table shape from header
+            header_cols = [c.strip() for c in (pending_header or "").strip("|").split("|")]
+            if len(header_cols) >= 6 and len(cols) >= 5:
+                # Historical: | 版本 | 状态 | 文档ID | 标题 | 原文 | 替代关系 |
+                ver, title, url = cols[0], cols[3], cols[4]
+            elif len(cols) >= 4:
+                # Current: | 版本 | 文档ID | 标题 | 生效日期 | 原文 |
+                ver, title = cols[0], cols[2]
+                date = cols[3] if len(cols) > 3 else ""
+                url = cols[4] if len(cols) > 4 else ""
+            else:
+                continue
+            label = f"v{ver}"
+            if len(header_cols) <= 5 and len(cols) > 3:
+                label = f"v{ver} ({cols[3]})"
+            if url.startswith("http"):
+                lines.append(f"  - {label}: [{title}]({url})")
+            else:
+                lines.append(f"  - {label}: {title}")
+        elif in_table and not stripped.startswith("|"):
+            in_table = False
+            pending_header = None
+    if lines:
+        return "  版本历史:\n" + "\n".join(lines)
+    return ""
+
+
+def _append_sources_to_answer(
+    chat_history: list[dict], agent_answer: AgentAnswer | None
+) -> list[dict]:
+    """Append data sources to the last assistant message for inline display."""
+    if not agent_answer or not chat_history:
+        return chat_history
+    src_lines: list[str] = []
+    if agent_answer.local_sources:
+        src_lines.append("\n\n---\n**数据来源:**\n")
+        for src in agent_answer.local_sources:
+            meta = src.metadata or {}
+            source_url = meta.get("source_url", "")
+            if source_url:
+                src_lines.append(f"- [{src.title}]({source_url})")
+            else:
+                src_lines.append(f"- {src.title}")
+    if agent_answer.web_sources:
+        src_lines.append("\n**网络来源:**\n")
+        for src in agent_answer.web_sources:
+            src_lines.append(f"- [{src.title}]({src.url})")
+    if src_lines:
+        result = list(chat_history)
+        last = dict(result[-1])
+        last["content"] = last.get("content", "") + "".join(src_lines)
+        result[-1] = last
+        return result
+    return chat_history
 
 
 # ---------------------------------------------------------------------------
@@ -209,12 +304,17 @@ def create_ui(agent: SearchAgent) -> gr.Blocks:
             ):
                 agent_answer = aa
                 if chat_update:
-                    yield chat_update, log_text, build_sources_markdown(aa), gr.update()
+                    # Append sources to answer for inline display
+                    answer_with_sources = _append_sources_to_answer(
+                        chat_update, agent_answer
+                    )
+                    yield answer_with_sources, log_text, build_sources_markdown(aa), gr.update()
                 else:
                     yield history, log_text, build_sources_markdown(agent_answer), gr.update()
 
             final_history = chat_update if chat_update else history
-            yield final_history, log_text, build_sources_markdown(agent_answer), ""
+            final_with_sources = _append_sources_to_answer(final_history, agent_answer)
+            yield final_with_sources, log_text, build_sources_markdown(agent_answer), ""
 
         def on_clear():
             return [], "", ""
