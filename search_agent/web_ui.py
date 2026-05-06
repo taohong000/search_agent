@@ -6,6 +6,7 @@ import contextlib
 import logging
 import queue
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -60,7 +61,7 @@ def ask_with_logs(
     web_policy: str = "auto",
     top_k: int = 8,
 ):
-    """Generator yielding (chat_history, log_text, agent_answer | None).
+    """Generator yielding (chat_history, log_text, agent_answer | None, stats_text).
 
     Yields intermediate updates while the agent runs, then a final update
     with the complete answer and the AgentAnswer object.
@@ -82,6 +83,7 @@ def ask_with_logs(
             log_q.put(None)  # sentinel
 
     thread = threading.Thread(target=_run, daemon=True)
+    start_time = time.monotonic()
     thread.start()
 
     collected_logs: list[str] = []
@@ -91,16 +93,20 @@ def ask_with_logs(
         try:
             msg = log_q.get(timeout=0.3)
         except queue.Empty:
-            yield [], "\n".join(collected_logs[-MAX_LOG_LINES:]), None
+            elapsed = time.monotonic() - start_time
+            yield [], "\n".join(collected_logs[-MAX_LOG_LINES:]), None, f"⏱ 处理中... {elapsed:.1f}s"
             continue
         if msg is None:
             break
         collected_logs.append(msg)
-        yield [], "\n".join(collected_logs[-MAX_LOG_LINES:]), None
+        elapsed = time.monotonic() - start_time
+        yield [], "\n".join(collected_logs[-MAX_LOG_LINES:]), None, f"⏱ 处理中... {elapsed:.1f}s"
 
     # Drain any remaining messages
     while not log_q.empty():
         collected_logs.append(log_q.get_nowait())
+
+    total_elapsed = time.monotonic() - start_time
 
     # Build final answer
     if error_holder:
@@ -116,7 +122,19 @@ def ask_with_logs(
         {"role": "assistant", "content": answer_text},
     ]
     agent_answer = result_holder.get("answer")
-    yield chat_update, "\n".join(collected_logs[-MAX_LOG_LINES:]), agent_answer
+
+    # Build stats summary
+    stats_parts = [f"⏱ 耗时 {total_elapsed:.1f}s"]
+    if agent_answer and hasattr(agent_answer, "local_sources"):
+        n_local = len(agent_answer.local_sources)
+        n_web = len(agent_answer.web_sources)
+        n_rounds = len(agent_answer.search_rounds)
+        stats_parts.append(f"来源 {n_local} 本地 + {n_web} 网络")
+        stats_parts.append(f"搜索 {n_rounds} 轮")
+        stats_parts.append(f"{'✅ 可回答' if agent_answer.answerable else '❌ 证据不足'}")
+    stats_text = " | ".join(stats_parts)
+
+    yield chat_update, "\n".join(collected_logs[-MAX_LOG_LINES:]), agent_answer, stats_text
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +290,7 @@ def create_ui(agent: SearchAgent) -> gr.Blocks:
                     )
 
             with gr.Column(scale=2):
+                stats_display = gr.Markdown(label="统计", value="")
                 log_display = gr.Textbox(
                     label="实时日志",
                     lines=20,
@@ -289,44 +308,43 @@ def create_ui(agent: SearchAgent) -> gr.Blocks:
         ):
             question = (question or "").strip()
             if not question:
-                yield history, "", "", gr.update()
+                yield history, "", "", "", gr.update()
                 return
 
             history = history + [
                 {"role": "user", "content": question},
                 {"role": "assistant", "content": "正在搜索，请稍候..."},
             ]
-            yield history, "正在初始化...", "", gr.update()
+            yield history, "正在初始化...", "⏱ 启动中...", "", gr.update()
 
             agent_answer = None
-            for chat_update, log_text, aa in ask_with_logs(
+            for chat_update, log_text, aa, stats in ask_with_logs(
                 agent, question, web_policy=policy, top_k=int(top_k_val)
             ):
                 agent_answer = aa
                 if chat_update:
-                    # Append sources to answer for inline display
                     answer_with_sources = _append_sources_to_answer(
                         chat_update, agent_answer
                     )
-                    yield answer_with_sources, log_text, build_sources_markdown(aa), gr.update()
+                    yield answer_with_sources, log_text, stats, build_sources_markdown(aa), gr.update()
                 else:
-                    yield history, log_text, build_sources_markdown(agent_answer), gr.update()
+                    yield history, log_text, stats, build_sources_markdown(agent_answer), gr.update()
 
             final_history = chat_update if chat_update else history
             final_with_sources = _append_sources_to_answer(final_history, agent_answer)
-            yield final_with_sources, log_text, build_sources_markdown(agent_answer), ""
+            yield final_with_sources, log_text, stats, build_sources_markdown(agent_answer), ""
 
         def on_clear():
-            return [], "", ""
+            return [], "", "", ""
 
         submit_args = dict(
             fn=on_submit,
             inputs=[question_input, chatbot, web_policy, top_k],
-            outputs=[chatbot, log_display, sources_display, question_input],
+            outputs=[chatbot, log_display, stats_display, sources_display, question_input],
         )
         submit_btn.click(**submit_args)
         question_input.submit(**submit_args)
-        clear_btn.click(fn=on_clear, outputs=[chatbot, log_display, sources_display])
+        clear_btn.click(fn=on_clear, outputs=[chatbot, log_display, stats_display, sources_display])
 
     return demo
 
