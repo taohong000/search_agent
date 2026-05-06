@@ -479,6 +479,8 @@ def build_tool_loop_system_prompt(web_policy: str) -> str:
         "在调用 final_answer 前，至少先调用一次 rg_search 或 fuzzy_file_search；找到候选文件后必须 read_local_file。"
         "所有回答必须基于已观察到的工具结果；证据不足时 final_answer(answerable=false)。"
         "本地工具只读，且只能访问 data_dir 内文件。"
+        "地域过滤：文档 front matter 中有 city_code 字段（如 SH=上海、BJ=北京）。"
+        "搜索本地资料时，使用 city_code 参数过滤，不要在查询词中包含城市名称。"
         f"{web_instruction}"
     )
 
@@ -487,23 +489,27 @@ def build_tool_schemas(web_policy: str, has_web_search: bool, has_web_fetch: boo
     tools = [
         function_tool(
             "rg_search",
-            "Search Markdown content under data_dir with ripgrep-style text search.",
+            "Search Markdown content under data_dir with ripgrep-style text search. "
+            "Use city_code to filter by city (e.g. 'SH' for Shanghai) instead of including city name in query.",
             {
                 "query": {"type": "string"},
                 "roots": {"type": "array", "items": {"type": "string"}},
                 "globs": {"type": "array", "items": {"type": "string"}},
                 "context": {"type": "integer"},
                 "max_results": {"type": "integer"},
+                "city_code": {"type": "string", "description": "Filter by city code (e.g. 'SH' for Shanghai, 'BJ' for Beijing)"},
             },
             ["query"],
         ),
         function_tool(
             "fuzzy_file_search",
-            "Fuzzy search Markdown file paths and names under data_dir.",
+            "Fuzzy search Markdown file paths and names under data_dir. "
+            "Use city_code to filter by city (e.g. 'SH' for Shanghai) instead of including city name in query.",
             {
                 "query": {"type": "string"},
                 "roots": {"type": "array", "items": {"type": "string"}},
                 "limit": {"type": "integer"},
+                "city_code": {"type": "string", "description": "Filter by city code (e.g. 'SH' for Shanghai, 'BJ' for Beijing)"},
             },
             ["query"],
         ),

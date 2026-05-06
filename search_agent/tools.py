@@ -61,6 +61,7 @@ class SearchToolRunner:
         globs: list[str] | None = None,
         context: int = 2,
         max_results: int = 20,
+        city_code: str | None = None,
     ) -> dict[str, Any]:
         query = str(query or "").strip()
         max_results = clamp_int(max_results, 1, 100, 20)
@@ -77,14 +78,17 @@ class SearchToolRunner:
         if results is None:
             logger.info("rg_search using python fallback query=%r", query)
             results = self._python_content_search(query, search_roots, globs, context, max_results)
+        if city_code:
+            results = self._filter_by_city_code(results, city_code)
         self.state.search_rounds.append(SearchRound(query_terms=[query], hit_count=len(results)))
         logger.info(
-            "rg_search done query=%r roots=%s globs=%s context=%s max_results=%s hits=%s",
+            "rg_search done query=%r roots=%s globs=%s context=%s max_results=%s city_code=%s hits=%s",
             query,
             [str(root) for root in search_roots],
             globs,
             context,
             max_results,
+            city_code,
             len(results),
         )
         return {"ok": True, "query": query, "results": results}
@@ -94,6 +98,7 @@ class SearchToolRunner:
         query: str,
         roots: list[str] | None = None,
         limit: int = 20,
+        city_code: str | None = None,
     ) -> dict[str, Any]:
         query = str(query or "").strip()
         limit = clamp_int(limit, 1, 100, 20)
@@ -105,6 +110,8 @@ class SearchToolRunner:
 
         scored: list[tuple[float, str, Path]] = []
         for path in candidates:
+            if city_code and not self._path_matches_city_code(path, city_code):
+                continue
             rel = self._display_path(path)
             score = fuzzy_score(query, rel)
             if score > 0:
@@ -116,9 +123,10 @@ class SearchToolRunner:
         ]
         self.state.search_rounds.append(SearchRound(query_terms=[query], hit_count=len(results)))
         logger.info(
-            "fuzzy_file_search done query=%r roots=%s candidates=%s results=%s",
+            "fuzzy_file_search done query=%r roots=%s city_code=%s candidates=%s results=%s",
             query,
             [str(root) for root in search_roots],
+            city_code,
             len(candidates),
             len(results),
         )
@@ -278,13 +286,15 @@ class SearchToolRunner:
         cmd.append(query)
         cmd.extend(str(root) for root in roots)
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=20, check=False, encoding="utf-8", errors="replace"
+            )
         except (OSError, subprocess.TimeoutExpired):
             return None
         if proc.returncode not in {0, 1}:
             return None
         matches: list[tuple[Path, int]] = []
-        for line in proc.stdout.splitlines():
+        for line in (proc.stdout or "").splitlines():
             match = re.match(r"^(.*?):(\d+):(.*)$", line)
             if not match:
                 continue
@@ -396,6 +406,24 @@ class SearchToolRunner:
         metadata, body = split_front_matter(text)
         title = metadata.get("title") or extract_title(body) or path.stem
         return title, metadata
+
+    def _filter_by_city_code(self, results: list[dict[str, Any]], city_code: str) -> list[dict[str, Any]]:
+        """过滤搜索结果，只保留 city_code 匹配的文档。"""
+        city_code = city_code.upper()
+        filtered = []
+        for result in results:
+            path = self._resolve_local_path(result.get("path", ""))
+            if path and self._path_matches_city_code(path, city_code):
+                filtered.append(result)
+        return filtered
+
+    def _path_matches_city_code(self, path: Path, city_code: str) -> bool:
+        """检查文件的 front matter 中 city_code 是否匹配。"""
+        text = read_utf8(path)
+        if text is None:
+            return False
+        metadata, _ = split_front_matter(text)
+        return metadata.get("city_code", "").upper() == city_code.upper()
 
 
 def clamp_int(value: Any, minimum: int, maximum: int, default: int) -> int:
