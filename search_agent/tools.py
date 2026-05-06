@@ -32,6 +32,7 @@ class SearchToolRunner:
         self.web_search = web_search
         self.web_fetcher = web_fetcher
         self.state = ToolRunState()
+        self._city_code_cache: dict[Path, str] = {}
 
     def run(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         logger.info("tool.run name=%s args=%s", name, args)
@@ -419,11 +420,21 @@ class SearchToolRunner:
 
     def _path_matches_city_code(self, path: Path, city_code: str) -> bool:
         """检查文件的 front matter 中 city_code 是否匹配。"""
+        return self._get_city_code(path) == city_code.upper()
+
+    def _get_city_code(self, path: Path) -> str:
+        """获取文件的 city_code，带缓存。"""
+        cached = self._city_code_cache.get(path)
+        if cached is not None:
+            return cached
         text = read_utf8(path)
         if text is None:
-            return False
+            self._city_code_cache[path] = ""
+            return ""
         metadata, _ = split_front_matter(text)
-        return metadata.get("city_code", "").upper() == city_code.upper()
+        code = metadata.get("city_code", "").upper()
+        self._city_code_cache[path] = code
+        return code
 
 
 def clamp_int(value: Any, minimum: int, maximum: int, default: int) -> int:
