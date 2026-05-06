@@ -1,1 +1,2 @@
 rapidfuzz
+gradio>=4.0

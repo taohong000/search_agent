@@ -20,6 +20,11 @@ def main(argv: list[str] | None = None) -> int:
     ask_parser.add_argument("--show-sources", action="store_true")
     ask_parser.add_argument("--config", default=None, help="Path to TOML config file")
 
+    web_parser = subparsers.add_parser("web", help="Launch Gradio web UI")
+    web_parser.add_argument("--config", default=None, help="Path to TOML config file")
+    web_parser.add_argument("--host", default="0.0.0.0", help="Server host")
+    web_parser.add_argument("--port", type=int, default=7860, help="Server port")
+
     args = parser.parse_args(argv)
     if args.command == "ask":
         # \u6839\u636e\u547d\u4ee4\u884c\u53c2\u6570\u786e\u5b9a\u7f51\u7edc\u641c\u7d22\u7b56\u7565\uff1aauto / always / never
@@ -66,6 +71,10 @@ def main(argv: list[str] | None = None) -> int:
             print("\n\u7f51\u9875\u6b63\u6587:")
             for page in result.web_pages:
                 print(f"- {page.title or page.url} | {page.provider} | {page.status} | {page.url}")
+        return 0
+    elif args.command == "web":
+        from .web_ui import main as web_main
+        web_main(config_path=args.config, server_name=args.host, server_port=args.port)
         return 0
     return 1
 
