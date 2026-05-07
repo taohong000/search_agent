@@ -62,3 +62,5 @@ class AgentAnswer:
     used_web: bool = False
     answerable: bool = True
     unable_reason: str = ""
+    conversation_history: list[dict] = field(default_factory=list)
+    needs_clarification: bool = False

@@ -142,6 +142,95 @@ class BailianClient:
         except Exception:
             return None
 
+    def compress_conversation(
+        self,
+        messages: list[dict],
+        keep_recent: int = 4,
+        summary_prefix: str = "先前对话摘要：",
+    ) -> list[dict]:
+        """压缩旧对话为摘要，保留最近几轮对话原文。"""
+        if not messages:
+            return messages
+        system_msg = None
+        rest = []
+        for msg in messages:
+            if msg.get("role") == "system" and system_msg is None:
+                system_msg = msg
+            else:
+                rest.append(msg)
+        if system_msg is None:
+            system_msg = {"role": "system", "content": ""}
+            rest = list(messages)
+
+        user_indices = [i for i, m in enumerate(rest) if m.get("role") == "user"]
+        if len(user_indices) <= keep_recent:
+            return messages
+
+        cut = user_indices[-keep_recent]
+        old_msgs = rest[:cut]
+        recent_msgs = rest[cut:]
+
+        summary = self._summarize_messages(old_msgs)
+        if summary is None:
+            return messages
+
+        result = [system_msg]
+        result.append({"role": "user", "content": summary_prefix + summary})
+        result.append({"role": "assistant", "content": "已了解。"})
+        result.extend(recent_msgs)
+        return result
+
+    def _summarize_messages(self, messages: list[dict]) -> str | None:
+        """调用 LLM 将消息列表压缩为摘要文本。"""
+        if not self.api_key:
+            return None
+        lines = []
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content") or ""
+            if not content:
+                continue
+            if role == "user":
+                lines.append(f"用户：{content[:500]}")
+            elif role == "assistant":
+                lines.append(f"助手：{content[:500]}")
+        if not lines:
+            return None
+        conversation_text = "\n".join(lines)
+        prompt = (
+            "请将以下多轮对话历史压缩为一段简洁的摘要，保留以下关键信息：\n"
+            "1. 用户之前问过的所有问题的要点\n"
+            "2. 搜索中发现的关键事实和数据\n"
+            "3. 之前的回答中提到的政策、金额、比例等具体数据\n"
+            "4. 用户提到的地区、身份等个人信息\n\n"
+            f"对话历史：\n{conversation_text}\n\n"
+            "请直接输出摘要文本，不要使用 Markdown 格式。"
+        )
+        try:
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "你是一个对话摘要助手。"},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.2,
+            }
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            request = urllib.request.Request(
+                f"{self.base_url}/chat/completions",
+                data=data,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=60) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            return result["choices"][0]["message"]["content"]
+        except Exception:
+            return None
+
 
 def build_prompt(
     question: str,

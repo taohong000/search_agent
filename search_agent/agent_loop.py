@@ -78,7 +78,7 @@ class SearchAgent:
             max_tool_steps=settings.max_tool_steps,
         )
 
-    def ask(self, question: str, web_policy: str = "auto", top_k: int = 8) -> AgentAnswer:
+    def ask(self, question: str, web_policy: str = "auto", top_k: int = 8, history: list[dict] | None = None) -> AgentAnswer:
         logger.info(
             "ask start mode=%s question=%r web_policy=%s top_k=%s data_dir=%s",
             "tool_loop" if self._can_use_tool_loop() else "legacy",
@@ -89,14 +89,15 @@ class SearchAgent:
         )
         if self._can_use_tool_loop():
             try:
-                result = self._ask_with_tools(question, web_policy=web_policy, top_k=top_k)
+                result = self._ask_with_tools(question, web_policy=web_policy, top_k=top_k, history=history)
                 logger.info(
-                    "ask done mode=tool_loop answerable=%s used_web=%s local_sources=%s web_sources=%s rounds=%s",
+                    "ask done mode=tool_loop answerable=%s used_web=%s local_sources=%s web_sources=%s rounds=%s clarification=%s",
                     result.answerable,
                     result.used_web,
                     len(result.local_sources),
                     len(result.web_sources),
                     len(result.search_rounds),
+                    result.needs_clarification,
                 )
                 return result
             except Exception as exc:
@@ -116,14 +117,16 @@ class SearchAgent:
     def _can_use_tool_loop(self) -> bool:
         return bool(getattr(self.llm_client, "api_key", None)) and hasattr(self.llm_client, "chat_with_tools")
 
-    def _ask_with_tools(self, question: str, web_policy: str = "auto", top_k: int = 8) -> AgentAnswer:
+    def _ask_with_tools(self, question: str, web_policy: str = "auto", top_k: int = 8, history: list[dict] | None = None) -> AgentAnswer:
+        clarification = self._run_clarification_gate(question, web_policy, history)
+        if clarification is not None:
+            return clarification
+
         runner = SearchToolRunner(self.local_search.root, self.web_search, self.web_fetcher)
         tools = build_tool_schemas(web_policy, self.web_search is not None, self.web_fetcher is not None)
         available_tool_names = {tool["function"]["name"] for tool in tools}
-        messages = [
-            {"role": "system", "content": build_tool_loop_system_prompt(web_policy)},
-            {"role": "user", "content": question},
-        ]
+        system_msg = {"role": "system", "content": build_tool_loop_system_prompt(web_policy)}
+        messages = build_tool_loop_messages(system_msg, question, history)
 
         final_payload = None
         for step in range(1, self.max_tool_steps + 1):
@@ -144,6 +147,14 @@ class SearchAgent:
                 summarize_text(message.get("content") or ""),
             )
             if not tool_calls:
+                content = (message.get("content") or "").strip()
+                if step == 1 and content and not _looks_like_final_answer(content):
+                    logger.info("tool_loop step=%s clarification detected content=%s", step, summarize_text(content))
+                    return AgentAnswer(
+                        answer=content,
+                        needs_clarification=True,
+                        conversation_history=messages,
+                    )
                 logger.info("tool_loop step=%s no tool call; prompting for final_answer", step)
                 messages.append(
                     {
@@ -286,7 +297,54 @@ class SearchAgent:
             used_web=runner.state.used_web or web_policy == "always",
             answerable=answerable,
             unable_reason=unable_reason,
+            conversation_history=messages,
         )
+
+    def _run_clarification_gate(self, question: str, web_policy: str, history: list[dict] | None) -> AgentAnswer | None:
+        if should_skip_clarification(history):
+            return None
+
+        messages = build_clarification_messages(question, history)
+        tools = build_clarification_tool_schemas()
+        logger.info("clarification_gate start messages=%s", len(messages))
+        message = self.llm_client.chat_with_tools(messages, tools, tool_choice="auto", temperature=0)
+        messages.append(normalize_assistant_message(message))
+        tool_calls = message.get("tool_calls") or []
+        logger.info(
+            "clarification_gate result tool_calls=%s content=%s",
+            [tool_call_name(call) for call in tool_calls],
+            summarize_text(message.get("content") or ""),
+        )
+
+        for call in tool_calls:
+            if tool_call_name(call) != "clarification_decision":
+                continue
+            args, error = parse_tool_arguments(call)
+            if error is not None:
+                logger.warning("clarification_gate parse_error=%s", error)
+                return None
+            if bool(args.get("needs_clarification")):
+                clarification_question = str(args.get("question") or "").strip()
+                if not clarification_question:
+                    return None
+                logger.info("clarification_gate needs_clarification question=%s", summarize_text(clarification_question))
+                system_msg = {"role": "system", "content": build_tool_loop_system_prompt(web_policy)}
+                conversation = build_tool_loop_messages(system_msg, question, history)
+                conversation.append({"role": "assistant", "content": clarification_question})
+                return AgentAnswer(
+                    answer=clarification_question,
+                    needs_clarification=True,
+                    conversation_history=conversation,
+                )
+            return None
+
+        content = (message.get("content") or "").strip()
+        if content and not _looks_like_final_answer(content):
+            system_msg = {"role": "system", "content": build_tool_loop_system_prompt(web_policy)}
+            conversation = build_tool_loop_messages(system_msg, question, history)
+            conversation.append({"role": "assistant", "content": content})
+            return AgentAnswer(answer=content, needs_clarification=True, conversation_history=conversation)
+        return None
 
     def _ask_legacy(self, question: str, web_policy: str = "auto", top_k: int = 8) -> AgentAnswer:
         """主入口：接收用户问题，执行多轮本地搜索 + 可选网络搜索，返回最终答案。"""
@@ -399,8 +457,58 @@ def normalize_assistant_message(message: dict) -> dict:
     return normalized
 
 
+def build_tool_loop_messages(system_msg: dict, question: str, history: list[dict] | None = None) -> list[dict]:
+    if history:
+        messages = list(history)
+        if not messages or messages[0].get("role") != "system":
+            messages.insert(0, system_msg)
+        else:
+            messages[0] = system_msg
+        # 历史长度保护
+        if len(messages) > 50:
+            logger.warning("conversation history too long (%d messages), truncating", len(messages))
+            messages = [messages[0]] + messages[-20:]
+        if should_skip_clarification(messages):
+            messages.append(
+                {
+                    "role": "system",
+                    "content": "用户已多次未提供补充信息。请基于已有信息直接搜索并回答，不再追问。",
+                }
+            )
+        messages.append({"role": "user", "content": question})
+        return messages
+    return [system_msg, {"role": "user", "content": question}]
+
+
+def build_clarification_messages(question: str, history: list[dict] | None = None) -> list[dict]:
+    messages = [{"role": "system", "content": build_clarification_system_prompt()}]
+    for msg in (history or [])[-12:]:
+        role = msg.get("role")
+        content = (msg.get("content") or "").strip()
+        if role in {"user", "assistant"} and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": question})
+    return messages
+
+
+def should_skip_clarification(history: list[dict] | None) -> bool:
+    clarification_count = sum(
+        1
+        for msg in (history or [])[-6:]
+        if msg.get("role") == "assistant" and "请问" in (msg.get("content") or "")
+    )
+    return clarification_count >= 2
+
+
 def tool_call_name(call: dict) -> str:
     return str((call.get("function") or {}).get("name") or "")
+
+
+def _looks_like_final_answer(content: str) -> bool:
+    if len(content) > 300:
+        return True
+    answer_markers = ["根据", "资料", "答案", "回答", "无法回答", "以下是", "可以", "需要"]
+    return any(marker in content for marker in answer_markers)
 
 
 def parse_tool_arguments(call: dict) -> tuple[dict, str | None]:
@@ -485,6 +593,40 @@ def build_tool_loop_system_prompt(web_policy: str) -> str:
         "搜索本地资料时，使用 city_code 参数过滤，不要在查询词中包含城市名称。"
         f"{web_instruction}"
     )
+
+
+def build_clarification_system_prompt() -> str:
+    return (
+        "你是资料库问答系统的前置澄清判断器。"
+        "你的任务是在任何本地或联网检索之前，判断用户当前问题是否已经足够明确。"
+        "不要回答业务问题，不要编造政策内容，只判断是否需要追问。"
+        "仅当缺少会直接改变检索范围或答案结论的必要限定条件时才追问；"
+        "常见必要限定包括但不限于：地区或城市、时间或年度、人员身份或参保/缴存类型、"
+        "业务事项、对象主体、办理场景、用户想比较/查询/办理/计算的具体目标。"
+        "如果缺少的信息可以从最近对话历史中可靠继承，就不要追问。"
+        "如果问题虽然宽泛但仍可以先检索通用资料，也不要追问。"
+        "如果确实需要澄清，一次只问最关键的 1 个问题；问题要自然、简短、可直接回答，"
+        "不要列出很多选项，不要要求用户重复已经说过的信息。"
+        "必须调用 clarification_decision 工具返回结构化判断。"
+    )
+
+
+def build_clarification_tool_schemas() -> list[dict]:
+    return [
+        function_tool(
+            "clarification_decision",
+            "Decide whether the user question needs clarification before any search tools are exposed.",
+            {
+                "needs_clarification": {"type": "boolean"},
+                "question": {
+                    "type": "string",
+                    "description": "The single concise clarification question to ask when needed; empty otherwise.",
+                },
+                "reason": {"type": "string"},
+            },
+            ["needs_clarification", "question", "reason"],
+        )
+    ]
 
 
 def build_tool_schemas(web_policy: str, has_web_search: bool, has_web_fetch: bool) -> list[dict]:

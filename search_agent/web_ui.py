@@ -60,6 +60,7 @@ def ask_with_logs(
     question: str,
     web_policy: str = "auto",
     top_k: int = 8,
+    history: list[dict] | None = None,
 ):
     """Generator yielding (chat_history, log_text, agent_answer | None, stats_text).
 
@@ -75,7 +76,7 @@ def ask_with_logs(
         try:
             with _log_streaming(log_q):
                 result_holder["answer"] = agent.ask(
-                    question, web_policy=web_policy, top_k=top_k
+                    question, web_policy=web_policy, top_k=top_k, history=history
                 )
         except Exception as exc:
             error_holder.append(exc)
@@ -255,6 +256,15 @@ def _append_sources_to_answer(
     return chat_history
 
 
+def merge_chat_update(chat_display: list[dict], chat_update: list[dict]) -> list[dict]:
+    """Replace the current placeholder turn while preserving previous turns."""
+    if not chat_update:
+        return chat_display
+    if len(chat_display) >= 2:
+        return list(chat_display[:-2]) + list(chat_update)
+    return list(chat_update)
+
+
 # ---------------------------------------------------------------------------
 # Gradio UI
 # ---------------------------------------------------------------------------
@@ -263,7 +273,9 @@ def _append_sources_to_answer(
 def create_ui(agent: SearchAgent) -> gr.Blocks:
     with gr.Blocks(title="资料库搜索 Agent") as demo:
         gr.Markdown("# 资料库关键词搜索 Agent")
-        gr.Markdown("输入问题，Agent 将搜索本地资料库并（可选）联网验证后回答。")
+        gr.Markdown("输入问题，Agent 将搜索本地资料库并（可选）联网验证后回答。支持多轮对话和澄清追问。")
+
+        conversation_state = gr.State([])
 
         with gr.Row():
             with gr.Column(scale=3):
@@ -276,7 +288,9 @@ def create_ui(agent: SearchAgent) -> gr.Blocks:
                         scale=4,
                     )
                     submit_btn = gr.Button("发送", variant="primary", scale=1)
-                clear_btn = gr.Button("清空对话")
+                with gr.Row():
+                    new_conversation_btn = gr.Button("新建对话")
+                    compress_btn = gr.Button("压缩对话")
 
                 with gr.Accordion("搜索设置", open=False):
                     web_policy = gr.Radio(
@@ -302,49 +316,82 @@ def create_ui(agent: SearchAgent) -> gr.Blocks:
 
         def on_submit(
             question: str,
-            history: list,
+            chat_display: list,
             policy: str,
             top_k_val: float,
+            conv_state: list,
         ):
             question = (question or "").strip()
             if not question:
-                yield history, "", "", "", gr.update()
+                yield chat_display, "", "", "", gr.update(), conv_state
                 return
 
-            history = history + [
+            chat_display = chat_display + [
                 {"role": "user", "content": question},
-                {"role": "assistant", "content": "正在搜索，请稍候..."},
+                {"role": "assistant", "content": "正在分析问题，请稍候..."},
             ]
-            yield history, "正在初始化...", "⏱ 启动中...", "", gr.update()
+            yield chat_display, "正在分析问题...", "⏱ 启动中...", "", "", conv_state
 
             agent_answer = None
+            last_log = ""
+            last_stats = ""
+            chat_update = []
             for chat_update, log_text, aa, stats in ask_with_logs(
-                agent, question, web_policy=policy, top_k=int(top_k_val)
+                agent, question, web_policy=policy, top_k=int(top_k_val), history=conv_state
             ):
                 agent_answer = aa
+                last_log = log_text
+                last_stats = stats
                 if chat_update:
-                    answer_with_sources = _append_sources_to_answer(
-                        chat_update, agent_answer
-                    )
-                    yield answer_with_sources, log_text, stats, build_sources_markdown(aa), gr.update()
+                    merged_update = merge_chat_update(chat_display, chat_update)
+                    answer_with_sources = _append_sources_to_answer(merged_update, agent_answer)
+                    yield answer_with_sources, log_text, stats, build_sources_markdown(aa), gr.update(), conv_state
                 else:
-                    yield history, log_text, stats, build_sources_markdown(agent_answer), gr.update()
+                    yield chat_display, log_text, stats, build_sources_markdown(agent_answer), gr.update(), conv_state
 
-            final_history = chat_update if chat_update else history
-            final_with_sources = _append_sources_to_answer(final_history, agent_answer)
-            yield final_with_sources, log_text, stats, build_sources_markdown(agent_answer), ""
+            new_conv_state = agent_answer.conversation_history if agent_answer else conv_state
 
-        def on_clear():
-            return [], "", "", ""
+            if agent_answer and agent_answer.needs_clarification:
+                chat_update = [
+                    {"role": "user", "content": question},
+                    {"role": "assistant", "content": agent_answer.answer},
+                ]
+                merged = merge_chat_update(chat_display, chat_update)
+                yield merged, last_log, last_stats, "", gr.update(), new_conv_state
+            else:
+                final_history = merge_chat_update(chat_display, chat_update) if chat_update else chat_display
+                final_with_sources = _append_sources_to_answer(final_history, agent_answer)
+                yield final_with_sources, last_log, last_stats, build_sources_markdown(agent_answer), "", new_conv_state
+
+        def on_new_conversation():
+            return [], "", "", "", []
+
+        def on_compress(conv_state: list):
+            if not conv_state or len(conv_state) < 6:
+                return conv_state
+            try:
+                compressed = agent.llm_client.compress_conversation(conv_state, keep_recent=4)
+                return compressed
+            except Exception:
+                return conv_state
 
         submit_args = dict(
             fn=on_submit,
-            inputs=[question_input, chatbot, web_policy, top_k],
-            outputs=[chatbot, log_display, stats_display, sources_display, question_input],
+            inputs=[question_input, chatbot, web_policy, top_k, conversation_state],
+            outputs=[chatbot, log_display, stats_display, sources_display, question_input, conversation_state],
         )
         submit_btn.click(**submit_args)
         question_input.submit(**submit_args)
-        clear_btn.click(fn=on_clear, outputs=[chatbot, log_display, stats_display, sources_display])
+
+        new_conversation_btn.click(
+            fn=on_new_conversation,
+            outputs=[chatbot, log_display, stats_display, sources_display, conversation_state],
+        )
+        compress_btn.click(
+            fn=on_compress,
+            inputs=[conversation_state],
+            outputs=[conversation_state],
+        )
 
     return demo
 

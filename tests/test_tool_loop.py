@@ -54,12 +54,77 @@ class FakeWebFetcher:
 
 
 class ToolLoopTests(unittest.TestCase):
+    def test_clarification_gate_asks_before_exposing_search_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "公积金.md").write_text("# 公积金缴存\n\n上海住房公积金缴存政策。\n", encoding="utf-8")
+            client = FakeToolClient(
+                [
+                    tool_message(
+                        "call-clarify",
+                        "clarification_decision",
+                        {
+                            "needs_clarification": True,
+                            "question": "请问您想了解哪个城市、哪类身份的公积金缴存政策？",
+                            "reason": "缺少城市和身份类型。",
+                        },
+                    ),
+                    tool_message("call-rg", "rg_search", {"query": "公积金"}),
+                ]
+            )
+            agent = SearchAgent(data_dir=root, llm_client=client, max_tool_steps=3)
+
+            result = agent.ask("公积金如何缴存？", web_policy="never")
+
+        self.assertTrue(result.needs_clarification)
+        self.assertEqual(result.local_sources, [])
+        exposed = {tool["function"]["name"] for tool in client.calls[0]["tools"]}
+        self.assertEqual(exposed, {"clarification_decision"})
+        self.assertEqual(len(client.calls), 1)
+
+    def test_clarification_gate_allows_clear_question_to_search(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "公积金.md").write_text("# 上海公积金缴存\n\n单位和职工共同缴存住房公积金。\n", encoding="utf-8")
+            client = FakeToolClient(
+                [
+                    tool_message(
+                        "call-no-clarify",
+                        "clarification_decision",
+                        {
+                            "needs_clarification": False,
+                            "question": "",
+                            "reason": "问题已包含城市和业务事项。",
+                        },
+                    ),
+                    tool_message("call-rg", "rg_search", {"query": "公积金 缴存", "city_code": "SH"}),
+                    tool_message(
+                        "call-final",
+                        "final_answer",
+                        {
+                            "answer": "上海公积金由单位和职工共同缴存。",
+                            "answerable": True,
+                            "local_sources": [{"path": "公积金.md"}],
+                        },
+                    ),
+                ]
+            )
+            agent = SearchAgent(data_dir=root, llm_client=client, max_tool_steps=3)
+
+            result = agent.ask("上海公积金如何缴存？", web_policy="never")
+
+        self.assertFalse(result.needs_clarification)
+        self.assertTrue(result.answerable)
+        exposed = {tool["function"]["name"] for tool in client.calls[1]["tools"]}
+        self.assertIn("rg_search", exposed)
+
     def test_tool_loop_passes_tool_results_to_next_round_and_final_answer(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "社保.md").write_text("# 灵活就业参保\n\n失业后可以办理灵活就业参保。\n", encoding="utf-8")
             client = FakeToolClient(
                 [
+                    no_clarification_message(),
                     tool_message("call-rg", "rg_search", {"query": "灵活就业"}),
                     tool_message("call-read", "read_local_file", {"path": "社保.md", "start_line": 1, "max_lines": 20}),
                     tool_message(
@@ -80,7 +145,7 @@ class ToolLoopTests(unittest.TestCase):
         self.assertTrue(result.answerable)
         self.assertFalse(result.used_web)
         self.assertEqual(result.local_sources[0].title, "灵活就业参保")
-        self.assertTrue(any(message["role"] == "tool" for message in client.calls[1]["messages"]))
+        self.assertTrue(any(message["role"] == "tool" for message in client.calls[2]["messages"]))
 
     def test_tool_loop_uses_web_search_and_fetch_sources(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -88,6 +153,7 @@ class ToolLoopTests(unittest.TestCase):
             (root / "社保.md").write_text("# 社保\n\n本地社保政策。\n", encoding="utf-8")
             client = FakeToolClient(
                 [
+                    no_clarification_message(),
                     tool_message("call-web", "web_search", {"query": "上海 灵活就业 社保 2026", "num": 1}),
                     tool_message(
                         "call-fetch",
@@ -123,7 +189,13 @@ class ToolLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "社保.md").write_text("# 社保\n\n灵活就业。\n", encoding="utf-8")
-            client = FakeToolClient([tool_message("call-rg", "rg_search", {"query": "灵活就业"})])
+            client = FakeToolClient(
+                [
+                    no_clarification_message(),
+                    tool_message("call-rg", "rg_search", {"query": "灵活就业"}),
+                    tool_message("call-final", "final_answer", {"answer": "", "answerable": False}),
+                ]
+            )
             agent = SearchAgent(data_dir=root, llm_client=client, max_tool_steps=1)
 
             result = agent.ask("问题", web_policy="never")
@@ -138,6 +210,7 @@ class ToolLoopTests(unittest.TestCase):
             (root / "社保.md").write_text("# 社保\n\n灵活就业。\n", encoding="utf-8")
             client = FakeToolClient(
                 [
+                    no_clarification_message(),
                     tool_message("call-web", "web_search", {"query": "should be unavailable"}),
                     tool_message("call-fuzzy", "fuzzy_file_search", {"query": "社保"}),
                     tool_message(
@@ -155,11 +228,11 @@ class ToolLoopTests(unittest.TestCase):
 
             result = agent.ask("问题", web_policy="never")
 
-        exposed = {tool["function"]["name"] for tool in client.calls[0]["tools"]}
+        exposed = {tool["function"]["name"] for tool in client.calls[1]["tools"]}
         self.assertNotIn("web_search", exposed)
         self.assertFalse(result.used_web)
         self.assertFalse(result.answerable)
-        self.assertIn("tool unavailable: web_search", client.calls[1]["messages"][-1]["content"])
+        self.assertIn("tool unavailable: web_search", client.calls[2]["messages"][-1]["content"])
 
     def test_premature_final_answer_is_rejected_until_local_search_runs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -167,6 +240,7 @@ class ToolLoopTests(unittest.TestCase):
             (root / "公积金.md").write_text("# 公积金缴存\n\n单位和职工共同缴存住房公积金。\n", encoding="utf-8")
             client = FakeToolClient(
                 [
+                    no_clarification_message(),
                     tool_message(
                         "call-final-too-soon",
                         "final_answer",
@@ -189,7 +263,7 @@ class ToolLoopTests(unittest.TestCase):
             result = agent.ask("上海公积金如何缴存", web_policy="auto")
 
         self.assertTrue(result.answerable)
-        self.assertIn("final_answer rejected", client.calls[1]["messages"][-1]["content"])
+        self.assertIn("final_answer rejected", client.calls[2]["messages"][-1]["content"])
 
 
 def tool_message(call_id, name, arguments):
@@ -204,6 +278,14 @@ def tool_message(call_id, name, arguments):
             }
         ],
     }
+
+
+def no_clarification_message():
+    return tool_message(
+        "call-no-clarify",
+        "clarification_decision",
+        {"needs_clarification": False, "question": "", "reason": "问题足够明确。"},
+    )
 
 
 if __name__ == "__main__":
