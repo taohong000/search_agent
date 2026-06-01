@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from search_agent.agent_loop import SearchAgent
+from search_agent.agent_loop import SearchAgent, build_clarification_system_prompt
 from search_agent.models import WebPageContent, WebSearchResult
 
 
@@ -81,6 +81,13 @@ class ToolLoopTests(unittest.TestCase):
         exposed = {tool["function"]["name"] for tool in client.calls[0]["tools"]}
         self.assertEqual(exposed, {"clarification_decision"})
         self.assertEqual(len(client.calls), 1)
+
+    def test_clarification_prompt_requires_region_for_local_policy_questions(self):
+        prompt = build_clarification_system_prompt()
+
+        self.assertIn("用户未说明地区或城市", prompt)
+        self.assertIn("必须先追问地区", prompt)
+        self.assertIn("不要先检索通用资料", prompt)
 
     def test_clarification_gate_allows_clear_question_to_search(self):
         with tempfile.TemporaryDirectory() as tmp:
